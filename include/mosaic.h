@@ -42,7 +42,8 @@ public:
 		mosaic1p2	= 19,
 		mosaic1p2x6A    = 20,
 		mosaic1p1p2x4A  = 21,
-		mosaic1p3A      = 22
+		mosaic1p3A      = 22,
+		mosaic3x2       = 23
 	} Type;
 
 	struct PartInfo
@@ -83,9 +84,17 @@ public:
 	Mosaic(Type type,DWORD size);
 	virtual ~Mosaic();
 
-	int GetWidth()		{ return mosaicTotalWidth;}
-	int GetHeight()		{ return mosaicTotalHeight;}
-	int HasChanged()	{ return mosaicChanged; }
+	int GetWidth()		const { return mosaicTotalWidth;}
+	int GetHeight()		const { return mosaicTotalHeight;}
+	int GetInnerWidth()	const { return mosaicTotalWidth - paddingLeft - paddingRight;	}
+	int GetInnerHeight()	const { return mosaicTotalHeight - paddingTop - paddingBottom;	}
+	
+	int GetPaddingLeft()	const { return paddingLeft;	}
+	int GetPaddingRight()	const { return paddingRight;	}
+	int GetPaddingTop()	const { return paddingTop;	}
+	int GetPaddingBottom()	const { return paddingBottom;	}
+	
+	int HasChanged()	const { return mosaicChanged;	}
 
 	BYTE* GetFrame();
 	virtual int Update(int index,BYTE *frame,int width,int heigth, bool keepAspectRatio = true) = 0;
@@ -127,8 +136,11 @@ public:
 	int SetOverlaySVG(const char* svg);
 	int SetOverlayText();
 	int RenderOverlayText(const std::wstring& text,DWORD x,DWORD y,DWORD width,DWORD height, const Properties &properties);
+	int RenderOverlayText(const std::string& text,DWORD x,DWORD y,DWORD width,DWORD height, const Properties &properties);
 	int ResetOverlay();
 	int DrawVUMeter(int pos,DWORD val,DWORD size);
+	
+	bool SetPadding(int top, int right, int bottom, int left);
 	
 	virtual int GetWidth(int pos) = 0;
 	virtual int GetHeight(int pos) = 0;
@@ -170,6 +182,11 @@ protected:
 	Overlay  overlay;
 	bool	 overlayUsed;
 	bool	 overlayNeedsUpdate;
+	
+	int	paddingLeft	= 0;
+	int	paddingRight	= 0;
+	int	paddingTop	= 0;
+	int	paddingBottom	= 0;
 };
 
 #endif

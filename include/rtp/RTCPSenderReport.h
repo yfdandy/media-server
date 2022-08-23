@@ -20,6 +20,7 @@
 #include "rtp/RTCPCommonHeader.h"
 #include <vector>
 #include <memory>
+#include <math.h>
 
 class RTCPSenderReport : public RTCPPacket
 {

@@ -104,13 +104,13 @@ int Mpeg4Decoder::DecodePacket(const BYTE *in,DWORD len,int lost,int last)
 	return ret;
 }
 
-int Mpeg4Decoder::Decode(BYTE* buffer,DWORD size)
+int Mpeg4Decoder::Decode(const BYTE* buffer,DWORD size)
 {
 	int got_picture = 0;
 
 	AVPacket pkt;
 	av_init_packet(&pkt);
-	pkt.data = buffer;
+	pkt.data = (uint8_t*)buffer;
 	pkt.size = size;
 	int readed = avcodec_decode_video2(ctx, picture, &got_picture, &pkt);
 
@@ -163,7 +163,7 @@ DWORD Mpeg4Encoder::bufSize=4096*16;
 * Mpeg4Encoder
 *	Constructor de la clase
 ************************/
-Mpeg4Encoder::Mpeg4Encoder(const Properties& properties)
+Mpeg4Encoder::Mpeg4Encoder(const Properties& properties) : frame(VideoCodec::MPEG4)
 {
 	// Set default values
 	codec   = NULL;
@@ -189,8 +189,8 @@ Mpeg4Encoder::Mpeg4Encoder(const Properties& properties)
 	ctx = avcodec_alloc_context3(codec);
 	picture = av_frame_alloc();
 
-	//Y alocamos el buffer
-	frame = new VideoFrame(type,bufSize);
+	//Disable sharing buffer on clone
+	frame.DisableSharedBuffer();
 }
 
 /***********************
@@ -199,7 +199,6 @@ Mpeg4Encoder::Mpeg4Encoder(const Properties& properties)
 ************************/
 Mpeg4Encoder::~Mpeg4Encoder()
 {
-	delete(frame);
 	avcodec_close(ctx);
 	free(ctx);
 	free(picture);
@@ -305,23 +304,23 @@ VideoFrame* Mpeg4Encoder::EncodeFrame(BYTE *in,DWORD len)
 	picture->data[2] = in+numPixels*5/4;
 
 	//Codificamos
-	bufLen=avcodec_encode_video(ctx,frame->GetData(),frame->GetMaxMediaLength(),picture);
+	bufLen=avcodec_encode_video(ctx,frame.GetData(),frame.GetMaxMediaLength(),picture);
 
 	//Set length
-	frame->SetLength(bufLen);
+	frame.SetLength(bufLen);
 
 	//Set width and height
-	frame->SetWidth(ctx->width);
-	frame->SetHeight(ctx->height);
+	frame.SetWidth(ctx->width);
+	frame.SetHeight(ctx->height);
 
 	//Is intra
-	frame->SetIntra(ctx->coded_frame->key_frame);
+	frame.SetIntra(ctx->coded_frame->key_frame);
 
 	//Unset fpu
 	picture->key_frame = 0;
 	picture->pict_type = AV_PICTURE_TYPE_NONE;
 	//Clean all previous packets
-	frame->ClearRTPPacketizationInfo();
+	frame.ClearRTPPacketizationInfo();
 
 	//From the begining
 	DWORD ini = 0;
@@ -338,7 +337,7 @@ VideoFrame* Mpeg4Encoder::EncodeFrame(BYTE *in,DWORD len)
 			len=bufLen-ini;
 
 		//Add rtp packet
-		frame->AddRtpPacket(ini,len,NULL,0);
+		frame.AddRtpPacket(ini,len,NULL,0);
 
 		//Increase pointer
 		ini += len;
@@ -347,7 +346,7 @@ VideoFrame* Mpeg4Encoder::EncodeFrame(BYTE *in,DWORD len)
 	//Y ponemos a cero el comienzo
 	bufIni=0;
 
-	return frame;
+	return &frame;
 }
 
 /***********************

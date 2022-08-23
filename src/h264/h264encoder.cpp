@@ -29,12 +29,11 @@ static void X264_log(void *p, int level, const char *fmt, va_list args)
 * H264Encoder
 *	Constructor de la clase
 ***********************/
-H264Encoder::H264Encoder(const Properties& properties)
+H264Encoder::H264Encoder(const Properties& properties) : frame(VideoCodec::H264)
 {
 	// Set default values
 	type    = VideoCodec::H264;
 	format  = 0;
-	frame	= NULL;
 	pts	= 0;
 
 	//No estamos abiertos
@@ -44,12 +43,21 @@ H264Encoder::H264Encoder(const Properties& properties)
 	bitrate = 0;
 	fps = 0;
 	intraPeriod = X264_KEYINT_MAX_INFINITE;
+	
+	//Number of threads or auto
+	threads = properties.GetProperty("h264.threads",0);
 
 	//Check profile level id
 	h264ProfileLevelId = properties.GetProperty("h264.profile-level-id",std::string("42801F"));
+	
+	//Use annex b
+	annexb = properties.GetProperty("h264.annexb",false);
 
 	//Check mode
 	streaming = properties.HasProperty("streaming");
+
+	//Disable sharing buffer on clone
+	frame.DisableSharedBuffer();
 
 	//Reste values
 	enc = NULL;
@@ -65,10 +73,6 @@ H264Encoder::~H264Encoder()
 	if (enc)
 		//Close it
 		x264_encoder_close(enc);
-	//If we have created a frame
-	if (frame)
-		//Delete it
-		delete(frame);
 }
 
 /**********************
@@ -181,12 +185,12 @@ int H264Encoder::OpenCodec()
 		params.rc.i_vbv_buffer_size = bitrate;
 	}
 	params.rc.f_vbv_buffer_init = 0;
-	params.i_threads	    = 1; //0 is auto!!
+	params.i_threads	    = threads; //0 is auto!!
 	params.b_sliced_threads	    = 0;
 	params.rc.i_lookahead       = 0;
 	params.i_sync_lookahead	    = 0;
 	params.i_bframe             = 0;
-	params.b_annexb		    = 0; 
+	params.b_annexb		    = annexb; 
 	params.b_repeat_headers     = 1;
 	params.i_fps_num	    = fps;
 	params.i_fps_den	    = 1;
@@ -281,54 +285,86 @@ VideoFrame* H264Encoder::EncodeFrame(BYTE *buffer,DWORD bufferSize)
 		Error("Error encoding frame [len:%d]\n",len);
 		return NULL;
 	}
-	//Check size
-	if (!frame)
-		//Create new frame
-		frame = new VideoFrame(type,len);
 
 	//Set the media
-	frame->SetMedia(nals[0].p_payload,len);
+	frame.SetMedia(nals[0].p_payload,len);
 
 	//Set width and height
-	frame->SetWidth(width);
-	frame->SetHeight(height);
+	frame.SetWidth(width);
+	frame.SetHeight(height);
 
 	//Set intra
-	frame->SetIntra(pic_out.b_keyframe);
+	frame.SetIntra(pic_out.b_keyframe);
 
 	//Unset type
 	pic.i_type = X264_TYPE_AUTO;
 
 	//Emtpy rtp info
-	frame->ClearRTPPacketizationInfo();
+	frame.ClearRTPPacketizationInfo();
+	
+	//If intra
+	if (pic_out.b_keyframe)
+	{
+		//Clear config
+		config.ClearSequenceParameterSets();
+		config.ClearPictureParameterSets();
+	}
 
 	//Add packetization
 	for (int i=0;i<numNals;i++)
 	{
-		// Get NAL data pointer skiping the header
-		BYTE* nalData = nals[i].p_payload+4;
+		// Get NAL data pointer skiping the header (nalUnit = type + nal)
+		BYTE* nalUnit = nals[i].p_payload+4;
 		//Get size
-		DWORD nalSize = nals[i].i_payload-4;
+		DWORD nalUnitSize = nals[i].i_payload-4;
 		//Get nal pos
-		DWORD pos = nalData - nals[0].p_payload;
+		DWORD pos = nalUnit - nals[0].p_payload;
 		//Get nal type
-		BYTE nalType = (nalData[0] & 0x1f);
-		//Check if it is an SPS
-		if (nalType==7)
+		BYTE nalType = (nalUnit[0] & 0x1f);
+		//Skip header
+		BYTE* nalData = nalUnit+1;
+		DWORD nalSize = nalUnitSize-1;
+		//Check if IDR SPS or PPS
+		switch (nalType)
 		{
-			//Get profile as hex representation
-			DWORD profileLevel = strtol (h264ProfileLevelId.c_str(),NULL,16);
-			//Modify profile level ID to match offered one
-			set3(nalData,1,profileLevel);
+			case 0x07:
+			{
+				//Get profile as hex representation
+				DWORD profileLevel = strtol (h264ProfileLevelId.c_str(),NULL,16);
+				//Modify profile level ID to match offered one
+				set3(nalData,0,profileLevel);
+				//Set config
+				config.SetConfigurationVersion(1);
+				config.SetAVCProfileIndication(nalData[0]);
+				config.SetProfileCompatibility(nalData[1]);
+				config.SetAVCLevelIndication(nalData[2]);
+				config.SetNALUnitLength(3);
+				//Add full nal to config
+				config.AddSequenceParameterSet(nalData,nalSize);
+				break;
+			}
+			case 0x08:
+				//Add full nal to config
+				config.AddPictureParameterSet(nalData,nalSize);
+				break;
 		}
 		//Add rtp packet
-		frame->AddRtpPacket(pos,nalSize,NULL,0);
+		frame.AddRtpPacket(pos,nalUnitSize,NULL,0);
 	}
 
 	//Set first nal
 	curNal = 0;
 	
-	return frame;
+	//If intra
+	if (pic_out.b_keyframe)
+	{
+		//Set config size
+		frame.AllocateCodecConfig(config.GetSize());
+		//Serialize
+		config.Serialize(frame.GetCodecConfigData(),frame.GetCodecConfigSize());
+	}
+	
+	return &frame;
 }
 
 /**********************

@@ -5,6 +5,7 @@
 extern "C" {
 #include <x264.h>
 }
+#include "avcdescriptor.h"
 
 class H264Encoder : public VideoEncoder
 {
@@ -18,13 +19,15 @@ public:
 
 private:
 	int OpenCodec();
+	AVCDescriptor config;
 	bool streaming;
+	bool annexb;
 	x264_t*		enc;
 	x264_param_t    params;
 	x264_nal_t*	nals;
 	x264_picture_t  pic;
 	x264_picture_t 	pic_out;
-	VideoFrame*	frame;
+	VideoFrame	frame;
 	int curNal;
 	int numNals;
 	int width;
@@ -37,6 +40,7 @@ private:
 	int intraPeriod;
 	int pts;
 	std::string h264ProfileLevelId;
+	int threads;
 };
 
 #endif 

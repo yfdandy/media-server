@@ -3,6 +3,7 @@
 #include "vp9/VP9LayerSelector.h"
 #include "vp8/VP8LayerSelector.h"
 #include "h264/H264LayerSelector.h"
+#include "DependencyDescriptorLayerSelector.h"
 
 
 class DummyVideoLayerSelector : public VideoLayerSelector
@@ -21,7 +22,7 @@ public:
 		mark = packet->GetMark();
 		return true;
 	}
-	
+	bool IsWaitingForIntra() const override	{ return false; }
 	BYTE GetTemporalLayer() const override { return LayerInfo::MaxLayerId;  }
 	BYTE GetSpatialLayer()	const override { return LayerInfo::MaxLayerId;  }
 	VideoCodec::Type GetCodec()	const override { return codec; }
@@ -32,7 +33,8 @@ private:
 
 VideoLayerSelector* VideoLayerSelector::Create(VideoCodec::Type codec)
 {
-	
+	Debug("VideoLayerSelector::Create() [codec:%s]\n",VideoCodec::GetNameFor(codec));
+
 	switch(codec)
 	{
 		case VideoCodec::VP9:
@@ -41,12 +43,14 @@ VideoLayerSelector* VideoLayerSelector::Create(VideoCodec::Type codec)
 			return new VP8LayerSelector();
 		case VideoCodec::H264:
 			return new H264LayerSelector();
+		case VideoCodec::AV1:
+			return new DependencyDescriptorLayerSelector(VideoCodec::AV1);
 		default:
 			return new DummyVideoLayerSelector(codec);
 	}
 }
 
- LayerInfo VideoLayerSelector::GetLayerIds(const RTPPacket::shared& packet)
+ std::vector<LayerInfo> VideoLayerSelector::GetLayerIds(const RTPPacket::shared& packet)
 {
 	switch(packet->GetCodec())
 	{
@@ -56,7 +60,15 @@ VideoLayerSelector* VideoLayerSelector::Create(VideoCodec::Type codec)
 			return VP8LayerSelector::GetLayerIds(packet);
 		case VideoCodec::H264:
 			return H264LayerSelector::GetLayerIds(packet);
+		case VideoCodec::AV1:
+			return DependencyDescriptorLayerSelector::GetLayerIds(packet);
 		default:
-			return LayerInfo();
+			return {};
 	}
 }
+
+
+ bool VideoLayerSelector::AreLayersInfoeAggregated(const RTPPacket::shared& packet)
+ {
+	 return packet->GetCodec()== VideoCodec::AV1;
+ }

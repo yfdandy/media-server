@@ -3,7 +3,6 @@
 #include "partedmosaic.h"
 #include "asymmetricmosaic.h"
 #include "pipmosaic.h"
-#include "participant.h"
 #include <stdexcept>
 #include <vector>
 #include <map>
@@ -69,6 +68,8 @@ int Mosaic::GetNumSlotsForType(Mosaic::Type type)
 			return 10;
 		case mosaic1p3A:
 			return 4;
+		case mosaic3x2:
+			return 6;
 	}
 	//Error
 	return Error("-Unknown mosaic type %d\n",type);
@@ -659,6 +660,15 @@ int Mosaic::RenderOverlayText(const std::wstring& text,DWORD x,DWORD y,DWORD wid
 	return overlay.RenderText(text,x,y,width,height,properties);
 }
 
+int Mosaic::RenderOverlayText(const std::string& utf8,DWORD x,DWORD y,DWORD width,DWORD height, const Properties& properties)
+{
+	//Lock method
+	ScopedLock scoped(mutex);
+	
+	//Render text
+	return overlay.RenderText(utf8,x,y,width,height,properties);
+}
+
 int Mosaic::ResetOverlay()
 {
 	//Lock method
@@ -745,3 +755,22 @@ int Mosaic::DrawVUMeter(int pos,DWORD val,DWORD size)
 	return 1;
 }
 
+bool Mosaic::SetPadding(int top, int right, int bottom, int left)
+{
+	//Check positive values
+	if (top<0 || right<0 || bottom<0 || left<0)
+		return false;
+	//Check enought widht
+	if (left+right>mosaicTotalWidth)
+		return false;
+	//Check enough height
+	if (top+bottom>mosaicTotalHeight)
+		return false;
+	//Store padding
+	paddingTop = top;
+	paddingRight = right;
+	paddingBottom = bottom;
+	paddingLeft = left;
+	//Done
+	return true;
+}

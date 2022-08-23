@@ -30,7 +30,7 @@ private:
 	int		format;
 	int		opened;
 	int		intraPeriod;
-	VideoFrame	*frame;
+	VideoFrame	frame;
 };
 
 class H263Decoder : public VideoDecoder
@@ -39,7 +39,7 @@ public:
 	H263Decoder();
 	virtual ~H263Decoder();
 	virtual int DecodePacket(const BYTE *in,DWORD len,int lost,int last);
-	virtual int Decode(BYTE *in,DWORD len);
+	virtual int Decode(const BYTE *in,DWORD len);
 	virtual int GetWidth()		{ return ctx->width;		};
 	virtual int GetHeight()		{ return ctx->height;		};
 	virtual BYTE* GetFrame()	{ return (BYTE *)frame;		};
@@ -90,7 +90,7 @@ private:
 	int		format;
 	int		opened;
 	int		intraPeriod;
-	VideoFrame	*frame;
+	VideoFrame	frame;
 	WORD		num;
 	H263RFC2190Paquetizer paquetizer;
 };
@@ -101,7 +101,7 @@ public:
 	H263Decoder1996();
 	virtual ~H263Decoder1996();
 	virtual int DecodePacket(const BYTE *in,DWORD len,int lost,int last);
-	virtual int Decode(BYTE *in,DWORD len);
+	virtual int Decode(const BYTE *in,DWORD len);
 	virtual int GetWidth()		{ return ctx->width;		};
 	virtual int GetHeight()		{ return ctx->height;		};
 	virtual BYTE* GetFrame()	{ return (BYTE *)frame;		};

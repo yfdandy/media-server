@@ -15,6 +15,12 @@
 
 VP8Depacketizer::VP8Depacketizer() : RTPDepacketizer(MediaFrame::Video,VideoCodec::VP8), frame(VideoCodec::VP8,0)
 {
+	//Generic vp8 config
+	VP8CodecConfig config;
+	//Set config size
+	frame.AllocateCodecConfig(config.GetSize());
+	//Serialize
+	config.Serialize(frame.GetCodecConfigData(),frame.GetCodecConfigSize());
 	//Set clock rate
 	frame.SetClockRate(90000);
 }
@@ -28,18 +34,34 @@ void VP8Depacketizer::ResetFrame()
 {
 	//Reset frame data
 	frame.Reset();
+	//Generic vp8 config
+	VP8CodecConfig config;
+	//Set config size
+	frame.AllocateCodecConfig(config.GetSize());
+	//Serialize
+	config.Serialize(frame.GetCodecConfigData(),frame.GetCodecConfigSize());
 }
 
 MediaFrame* VP8Depacketizer::AddPacket(const RTPPacket::shared& packet)
 {
 	//Get timestamp in ms
-	auto ts = packet->GetTimestamp();
+	auto ts = packet->GetExtTimestamp();
 	//Check it is from same packet
 	if (frame.GetTimeStamp()!=ts)
 		//Reset frame
 		ResetFrame();
-	//Set timestamp
-	frame.SetTimestamp(ts);
+	//If not timestamp
+	if (frame.GetTimeStamp()==(DWORD)-1)
+	{
+		//Set timestamp
+		frame.SetTimestamp(ts);
+		//Set clock rate
+		frame.SetClockRate(packet->GetClockRate());
+		//Set time
+		frame.SetTime(packet->GetTime());
+		//Set sender time
+		frame.SetSenderTime(packet->GetSenderTime());
+	}
 	//Set SSRC
 	frame.SetSSRC(packet->GetSSRC());
 	//Add payload
@@ -47,9 +69,15 @@ MediaFrame* VP8Depacketizer::AddPacket(const RTPPacket::shared& packet)
 	//Check if it has vp8 descriptor
 	if (packet->vp8PayloadHeader)
 	{
-		//Set data
-		frame.SetWidth(packet->vp8PayloadHeader->width);
-		frame.SetHeight(packet->vp8PayloadHeader->height);
+		//Set key frame
+		frame.SetIntra(packet->vp8PayloadHeader->isKeyFrame);
+		//if it is intra
+		if (frame.IsIntra())
+		{
+			//Set dimensions
+			frame.SetWidth(packet->vp8PayloadHeader->width);
+			frame.SetHeight(packet->vp8PayloadHeader->height);
+		}
 	}
 	//If it is last return frame
 	return packet->GetMark() ? &frame : NULL;
@@ -61,9 +89,6 @@ MediaFrame* VP8Depacketizer::AddPayload(const BYTE* payload, DWORD len)
 	if (!len)
 		//Exit
 		return NULL;
-    
-	//Is first?
-	int first = !frame.GetLength(); 
     
 	VP8PayloadDescriptor desc;
 
@@ -85,18 +110,6 @@ MediaFrame* VP8Depacketizer::AddPayload(const BYTE* payload, DWORD len)
 	//Add RTP packet
 	frame.AddRtpPacket(pos,len-descLen,payload,descLen);
 	
-	//If it is first
-	if (first)
-	{
-		//calculate if it is an iframe
-		frame.SetIntra(!(payload[descLen] & 0x01));
-		//TODO: armonize with rtp packet vp8 data
-		frame.SetWidth(640);
-		frame.SetHeight(480);
-	}
-    
-
-		
 	return &frame;
 }
 

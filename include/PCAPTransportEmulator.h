@@ -41,10 +41,12 @@ public:
 	
 	// RTPReceiver interface
 	virtual int SendPLI(DWORD ssrc) override { return 1; }
+	virtual int Reset(DWORD ssrc)  override { return 1; }
 	TimeService& GetTimeService() { return loop; }
 private:
 	int Run();
-	
+	RTPIncomingSourceGroup* GetIncomingSourceGroup(DWORD ssrc);
+	RTPIncomingSource* GetIncomingSource(DWORD ssrc);
 private:
 	EventLoop loop;
 	std::unique_ptr<UDPReader> reader;
@@ -53,6 +55,7 @@ private:
 	RTPMap		extMap;
 	RTPMap		aptMap;
 	std::map<DWORD,RTPIncomingSourceGroup*> incoming;
+	std::map<MediaFrame::Type, RTPIncomingSourceGroup*> unknow;
 	uint64_t first		= 0;
 	volatile bool running	= false;;
 };

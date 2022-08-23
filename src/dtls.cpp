@@ -1,3 +1,4 @@
+#include "tracing.h"
 #include <srtp2/srtp.h>
 #include "dtls.h"
 #include "log.h"
@@ -22,7 +23,7 @@ DTLSConnection::AvailableHashes		DTLSConnection::availableHashes;
 void DTLSConnection::SetCertificate(const char* cert,const char* key)
 {
 	//Log
-	Log("-DTLSConnection::SetCertificate() | Set SSL certificate files [crt:\"%s\",key:\"%s\"]\n",cert,key);
+	Debug("-DTLSConnection::SetCertificate() | Set SSL certificate files [crt:\"%s\",key:\"%s\"]\n",cert,key);
 	//Set certificate files
 	DTLSConnection::certfile.assign(cert);
 	DTLSConnection::pvtfile.assign(key);
@@ -30,12 +31,13 @@ void DTLSConnection::SetCertificate(const char* cert,const char* key)
 
 int DTLSConnection::GenerateCertificate()
 {
-	Log(">DTLSConnection::GenerateCertificate()\n");
+	TRACE_EVENT("dtls", "DTLSConnection::GenerateCertificate");
+	Debug(">DTLSConnection::GenerateCertificate()\n");
 	
 	int ret = 0;
 	BIGNUM* bne = NULL;
 	RSA* rsa_key = NULL;
-	int num_bits = 1024;
+	int num_bits = 2048;
 	X509_NAME* cert_name = NULL;
 
 	// Create a big number object.
@@ -142,7 +144,7 @@ int DTLSConnection::GenerateCertificate()
 	// Free stuff and return.
 	BN_free(bne);
 	
-	Log("<DTLSConnection::GenerateCertificate()\n");
+	Debug("<DTLSConnection::GenerateCertificate()\n");
 	
 	return 1;
 
@@ -169,6 +171,7 @@ error:
 
 int DTLSConnection::ReadCertificate()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::ReadCertificate");
 	
 	//Open certificate file
 	FILE* file = fopen(certfile.c_str(), "r");
@@ -210,7 +213,8 @@ int DTLSConnection::ReadCertificate()
 
 int DTLSConnection::Initialize()
 {
-	Log(">DTLSConnection::Initialize()\n");
+	TRACE_EVENT("dtls", "Initialize");
+	Debug(">DTLSConnection::Initialize()\n");
 
 	// Create a single SSL context
 	ssl_ctx = SSL_CTX_new(DTLS_method());
@@ -333,13 +337,17 @@ int DTLSConnection::Initialize()
 	// OK, we have DTLS.
 	DTLSConnection::hasDTLS = true;
 
-	Log("<DTLSConnection::Initialize(%d)\n",availableHashes.size());
+	Debug("<DTLSConnection::Initialize(%d)\n",availableHashes.size());
 	//OK
 	return 1;
 }
 
 int DTLSConnection::Terminate()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Terminate");
+	Debug("-DTLSConnection::Terminate()\n");
+	
+	//Free stuff
 	if (privateKey)
 		EVP_PKEY_free(privateKey);
 	if (certificate)
@@ -347,6 +355,12 @@ int DTLSConnection::Terminate()
 	if (ssl_ctx)
 		SSL_CTX_free(ssl_ctx);
 	
+	//Reset values
+	privateKey = nullptr;
+	certificate = nullptr;
+	ssl_ctx = nullptr;
+	
+	//All done
 	return 1;
 }
 
@@ -388,6 +402,7 @@ void DTLSConnection::SetSRTPProtectionProfiles(const std::string& profiles)
 
 int DTLSConnection::Init()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Init");
 	Log(">DTLSConnection::Init()\n");
 
 	if (! DTLSConnection::hasDTLS)
@@ -460,20 +475,23 @@ int DTLSConnection::Init()
 	SSL_do_handshake(ssl);
 	
 	//Start timeout
-	timeout = timeService.CreateTimer(0ms, [this](...){
+	timeout = timeService.CreateTimer(0ms, [this](auto now){
 		//UltraDebug("-DTLSConnection::Timeout()\n");
 		//Check if still inited
 		if (inited)
 		{
 			//Run timeut
-			DTLSv1_handle_timeout(ssl);
-			//Check if there is any pending data
-			CheckPending();
+			if (DTLSv1_handle_timeout(ssl)!=-1)
+				//Check if there is any pending data
+				CheckPending();
 		}
 	});
+
+	//Set name for debug
+	timeout->SetName("DTLSConnection - timeout");
 	
 	//Start sctp transport
-	sctp.OnPendingData([this](...){
+	sctp.OnPendingData([this](){
 		//UltraDebug("-sctp::OnPendingData() [ssl:%p]\n",ssl);
 
 		if (ssl)
@@ -501,6 +519,7 @@ int DTLSConnection::Init()
 
 void DTLSConnection::End()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::End");
 	Log("-DTLSConnection::End()\n");
 	
 	if (!inited)
@@ -525,18 +544,26 @@ void DTLSConnection::End()
 	
 }
 
+void DTLSConnection::Stop()
+{
+	Log("<DTLSConnection::Stop()\n");
+
+	// If the SSL session is not yet finalized don't bother resetting
+	if (!SSL_is_init_finished(ssl))
+		return;
+
+	// Send close notify (no need to wait for other peer)
+	SSL_shutdown(ssl);
+}
+
 void DTLSConnection::Reset()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Reset");
 	Log("-DTLSConnection::Reset()\n");
 
 	//Run in event loop thread
-	timeService.Async([this](...){
-		// If the SSL session is not yet finalized don't bother resetting
-		if (!SSL_is_init_finished(ssl))
-			return;
-
-		SSL_shutdown(ssl);
-
+	timeService.Async([this](auto now){
+		Stop();
 		connection = CONNECTION_NEW;
 	});
 }
@@ -616,6 +643,7 @@ void DTLSConnection::SetRemoteFingerprint(Hash hash, const char *fingerprint)
 
 int DTLSConnection::Read(BYTE* data,DWORD size)
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Read", "size", size);
 	//UltraDebug("-DTLSConnection::Read() | [pending:%d]\n",BIO_ctrl_pending(write_bio));
 	
 	if (! DTLSConnection::hasDTLS) 
@@ -650,17 +678,19 @@ void DTLSConnection::onSSLInfo(int where, int ret)
 			listener.onDTLSSetupError();
 	}
 
-	// NOTE: checking SSL_get_shutdown(this->ssl) & SSL_RECEIVED_SHUTDOWN here upon
-	// receipt of a close alert does not work.
+	//Check pending data for writing
+	CheckPending();
 }
 
 int DTLSConnection::Renegotiate()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Renegotiate");
 	//Run in event loop thread
-	timeService.Async([this](...){
+	timeService.Async([this](auto now){
 		if (ssl)
 		{
 
+			TRACE_EVENT("dtls", "DTLSConnection::Renegotiate::Work");
 			SSL_renegotiate(ssl);
 			SSL_do_handshake(ssl);
 
@@ -673,6 +703,7 @@ int DTLSConnection::Renegotiate()
 
 int DTLSConnection::SetupSRTP()
 {
+	TRACE_EVENT("dtls", "DTLSConnection::SetupSRTP");
 	if (! DTLSConnection::hasDTLS)
 		return Error("-DTLSConnection::SetupSRTP() | no DTLS\n");
 
@@ -778,6 +809,7 @@ int DTLSConnection::SetupSRTP()
 
 int DTLSConnection::Write(const BYTE *buffer, DWORD size)
 {
+	TRACE_EVENT("dtls", "DTLSConnection::Write", "size", size);
 	//UltraDebug("-DTLSConnection::Write()\n");
 	
 	if (!DTLSConnection::hasDTLS)
@@ -788,10 +820,8 @@ int DTLSConnection::Write(const BYTE *buffer, DWORD size)
 
 	BIO_write(read_bio, buffer, size);
 	
-	//Reschedule timer
-	struct timeval tv = {0,0};
-	if (DTLSv1_get_timeout(ssl, &tv))
-		timeout->Again(std::chrono::milliseconds(getDifTime(&tv)));
+	//Check pending dtls data for sending
+	CheckPending();
 	
 	BYTE msg[MTU];
 	int len = SSL_read(ssl, msg, MTU);
@@ -820,7 +850,8 @@ int DTLSConnection::Write(const BYTE *buffer, DWORD size)
 		listener.onDTLSShutdown();
 		return 0;
 	}
-
+	
+	//Done
 	return 1;
 }
 
@@ -830,5 +861,16 @@ void DTLSConnection::CheckPending()
 	//Check if there is any pending 
 	if (BIO_ctrl_pending(write_bio))
 		listener.onDTLSPendingData();
+	//Reschedule timer
+	timeval tv = {};
+	if (timeout && DTLSv1_get_timeout(ssl, &tv))
+	{
+		//GET TIME
+		auto ms = getTime(tv) / 1000;
+		//IF any
+		if (ms)
+			//Get 
+			timeout->Again(std::chrono::milliseconds(ms));
+	}
 }
 

@@ -26,31 +26,10 @@ void VideoMixer::SetVADDefaultChangePeriod(DWORD ms)
 * VideoMixer
 *	Constructord
 ************************/
-VideoMixer::VideoMixer(const std::wstring &tag) : eventSource(tag)
+VideoMixer::VideoMixer(const std::wstring &tag) :
+	eventSource(tag),
+	tag(tag)
 {
-        //Save tag
- 	this->tag = tag;
-	
-	//Incializamos a cero
-	defaultMosaic	= NULL;
-
-	//No mosaics
-	maxMosaics = MosaicDefault;
-
-	//Nothing yet
-	version = 0;
-	mixingVideo = false;
-	//No proxy
-	proxy = NULL;
-	//No vad
-	vadMode = NoVAD;
-
-	//Keep aspect ration by default
-	keepAspectRatio = true;
-
-	//Don't show display names by default
-	displayNames = false;
-
 	//Inciamos lso mutex y la condicion
 	pthread_mutex_init(&mixVideoMutex,0);
 	pthread_cond_init(&mixVideoCond,0);
@@ -152,10 +131,6 @@ void VideoMixer::Process(bool forceUpdate, QWORD now)
 		//Get Mosaic
 		Mosaic *mosaic = itMosaic->second;
 
-		if (displayNames) 
-			//FIX: Reset text overlay
-			mosaic->SetOverlayText();
-
 		//Get number of slots
 		int numSlots = mosaic->GetNumSlots();
 
@@ -183,6 +158,7 @@ void VideoMixer::Process(bool forceUpdate, QWORD now)
 				{
 					//Get vad value for participant
 					DWORD vad = proxy->GetVAD(id);
+					UltraDebug("-VAD %d:%u\n",id,vad);
 					//Found the highest VAD participant but select at least one.
 					if (vad>maxVAD || vadId==0)
 					{
@@ -251,10 +227,12 @@ void VideoMixer::Process(bool forceUpdate, QWORD now)
 				//If we are displaying names
 				if (displayNames && !it->second->name.empty())
 				{
-					//Get
-					int height = overlay.GetProperty("height",30);
+					//Get properties depending on the speaking threshold
+					Properties& properties = (speakingThreshold && proxy->GetVAD(partId)>speakingThreshold) ? overlaySpeaking : overlay;
+					//Get heigth
+					int height = properties.GetProperty("height",30);
 					//Set name
-					mosaic->RenderOverlayText(it->second->name,mosaic->GetLeft(i),mosaic->GetTop(i)+mosaic->GetHeight(i)-height,mosaic->GetWidth(i),height,overlay);
+					mosaic->RenderOverlayText(it->second->name,mosaic->GetLeft(i),mosaic->GetTop(i)+mosaic->GetHeight(i)-height,mosaic->GetWidth(i),height,properties);
 				}
 
 				//Get output
@@ -308,6 +286,13 @@ void VideoMixer::Process(bool forceUpdate, QWORD now)
 		//Reset refresh 
 		source->refresh = true;
 	}
+	
+	//Reset overlays if displaying names
+	if (displayNames) 
+		//For each mosaic
+		for (Mosaics::iterator itMosaic=mosaics.begin();itMosaic!=mosaics.end();++itMosaic)
+			//FIX: Reset text overlay
+			itMosaic->second->SetOverlayText();
 	
 	//Desprotege la lista
 	lstVideosUse.Unlock();
@@ -466,9 +451,12 @@ int VideoMixer::Init(const Properties &properties)
 	
 	//Should we display names?
 	displayNames = properties.GetProperty("displayNames", false);
+	//Get threshold for switching to speaking mode
+	speakingThreshold = properties.GetProperty("speakingThreshold",48000);
 	
 	//Get overlay children properties
 	properties.GetChildren("overlay",overlay);
+	overlay.GetChildren("speaking",overlaySpeaking);
 		
 	//Load file
 	logo.Load(logoFile);
@@ -727,6 +715,53 @@ int VideoMixer::SetMixerMosaic(int id,int mosaicId)
 	//Si esta devolvemos el input
 	return true;
 }
+
+int  VideoMixer::SetMixerName(int id,const std::wstring &name)
+{
+	Debug(">SetMixerName [id:%d,mosaic:%ls]\n",id,name.c_str());
+
+	//Protegemos la lista
+	lstVideosUse.IncUse();
+	
+	//Buscamos el video source
+	Videos::iterator it = lstVideos.find(id);
+
+	//Si no esta
+	if (it == lstVideos.end())
+	{
+		//Desprotegemos
+		lstVideosUse.DecUse();
+		//Salimos
+		return Error("Mixer not found\n");
+	}
+
+	//Obtenemos el video source
+	VideoSource *video = (*it).second;
+
+	//Set mosaic
+	video->name = name;
+	
+	//Refresh it
+	video->refresh = true;
+
+	//Desprotegemos
+	lstVideosUse.DecUse();
+	
+	//LOck the mixing
+	pthread_mutex_lock(&mixVideoMutex);
+
+	//Signal for new video
+	pthread_cond_signal(&mixVideoCond);
+
+	//UNlock mixing
+	pthread_mutex_unlock(&mixVideoMutex);
+
+	Debug("<SetMixerName [%d]\n",id);
+
+	//Si esta devolvemos el input
+	return true;
+}
+
 /***********************************
  * AddMosaicParticipant
  *	Add a participant to be shown in a mosaic
@@ -754,7 +789,7 @@ int VideoMixer::AddMosaicParticipant(int mosaicId, int partId)
 	Mosaic* mosaic = itMosaic->second;
 
 	//Add participant to the mosaic with score so it is last
-	mosaic->AddParticipant(partId,ini-partId);
+	mosaic->AddParticipant(partId,partId<ini ? ini-partId : 0);
 
 	//Recalculate positions
 	mosaic->CalculatePositions();
@@ -921,7 +956,7 @@ int VideoMixer::DeleteMixer(int id)
 		//Desprotegemos la lista
 		lstVideosUse.Unlock();
 		//Salimos
-		return Error("Video mixer not found\n");
+		return Error("-Video mixer not found\n");
 	}
 
 	//Obtenemos el video source
@@ -995,6 +1030,61 @@ VideoOutput* VideoMixer::GetOutput(int id)
 	return output;
 }
 
+int VideoMixer::SetMosaicPadding(int mosaicId, int paddingTop, int paddingRight, int paddingBottom, int paddingLeft)
+{
+	
+	Log("-VideoMixer::SetMosaicPaddingVideoMixer::SetMosaicPadding() [id:%d,padding:{%d,%d,%d,%d}]\n",mosaicId, paddingTop, paddingRight, paddingBottom, paddingLeft);
+
+	//Get mosaic from id
+	Mosaics::iterator it = mosaics.find(mosaicId);
+
+	//Check if we have found it
+	if (it==mosaics.end())
+		return Error("VideoMixer::SetMosaicPadding() Mosaic not found");
+	
+	//Set padding
+	return it->second->SetPadding(paddingTop,paddingRight,paddingBottom,paddingLeft);
+}
+
+int VideoMixer::SetMosaicOverlayText(int mosaicId)
+{
+	//Get mosaic from id
+	Mosaics::iterator it = mosaics.find(mosaicId);
+
+	//Check if we have found it
+	if (it==mosaics.end())
+		return Error("VideoMixer::SetMosaicPadding() Mosaic not found");
+	
+	//Set padding
+	return it->second->SetOverlayText();
+}
+
+int VideoMixer::RenderMosaicOverlayText(int mosaicId,const std::wstring& text,DWORD x,DWORD y,DWORD width,DWORD height, const Properties &properties)
+{
+	//Get mosaic from id
+	Mosaics::iterator it = mosaics.find(mosaicId);
+
+	//Check if we have found it
+	if (it==mosaics.end())
+		return Error("VideoMixer::RenderMosaicOverlayText() Mosaic not found");
+	
+	//Set padding
+	return it->second->RenderOverlayText(text,x,y,width,height,properties);
+}
+
+int VideoMixer::RenderMosaicOverlayText(int mosaicId,const std::string& utf8,DWORD x,DWORD y,DWORD width,DWORD height, const Properties &properties)
+{
+	//Get mosaic from id
+	Mosaics::iterator it = mosaics.find(mosaicId);
+
+	//Check if we have found it
+	if (it==mosaics.end())
+		return Error("VideoMixer::RenderMosaicOverlayText() Mosaic not found");
+	
+	//Set padding
+	return it->second->RenderOverlayText(utf8,x,y,width,height,properties);
+}
+	
 /**************************
 * SetCompositionType
 *    Pone el modo de mosaico
@@ -1005,7 +1095,7 @@ int VideoMixer::SetCompositionType(int mosaicId,Mosaic::Type comp, int size)
 
 	//Create new mosaic
 	Mosaic *mosaic = Mosaic::CreateMosaic(comp,size);
-
+	
 	//Protegemos la lista
 	lstVideosUse.WaitUnusedAndLock();
 

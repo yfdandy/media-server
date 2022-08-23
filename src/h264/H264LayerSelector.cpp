@@ -155,7 +155,7 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 					BYTE nalType = payload[0] & 0x1f;
 
 					//Get nal data
-					const BYTE *nalData = payload+1;
+					[[maybe_unused]] const BYTE *nalData = payload+1;
 
 					//Check if IDR SPS or PPS
 					switch (nalType)
@@ -209,7 +209,7 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 				bool S = (payload[1] & 0x80) == 0x80;
 
 				/* strip off FU indicator and FU header bytes */
-				BYTE nalSize = payloadLen-2;
+				[[maybe_unused]] BYTE nalSize = payloadLen-2;
 
 				if (S)
 				{
@@ -223,14 +223,14 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 					BYTE nalType = nal_header & 0x1f;
 
 					//Get nal data
-					const BYTE *nalData = payload+1;
+					[[maybe_unused]] const BYTE *nalData = payload+1;
 
 					//Check if IDR SPS or PPS
 					switch (nalType)
 					{
 						case 0x05:
 							//It is intra
-							//isIntra = true;
+							isIntra = true;
 							break;
 						case 0x07:
 							//Consider it intra also
@@ -254,9 +254,9 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 				/* 1-23	 NAL unit	Single NAL unit packet per H.264	 5.6 */
 
 				//Get nal data
-				const BYTE *nalData = payload+1;
+				[[maybe_unused]] const BYTE *nalData = payload+1;
 				//Get nalu size
-				WORD nalSize = payloadLen-1;
+				[[maybe_unused]] WORD nalSize = payloadLen-1;
 				BYTE nalType = nal_unit_type;
 
 				//Check if IDR SPS or PPS
@@ -306,9 +306,9 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 	
 }
 
- LayerInfo H264LayerSelector::GetLayerIds(const RTPPacket::shared& packet)
+ std::vector<LayerInfo> H264LayerSelector::GetLayerIds(const RTPPacket::shared& packet)
 {
-	LayerInfo info;
+	std::vector<LayerInfo> infos;
 	
 	//If packet has frame markings
 	if (packet->HasFrameMarkings())
@@ -316,15 +316,37 @@ bool H264LayerSelector::Select(const RTPPacket::shared& packet,bool &mark)
 		//Get it from frame markings
 		const auto& fm = packet->GetFrameMarks();
 		//Get data from frame marking
-		info.temporalLayerId	= fm.temporalLayerId;
-		info.spatialLayerId	= fm.layerId;
-		
-		
+		infos.emplace_back(fm.temporalLayerId, fm.layerId);
+		//Set key frame flag
+		packet->SetKeyFrame(fm.independent);
+	} else {
+		//Get payload
+		const uint8_t* payload = packet->GetMediaData();
+		uint32_t len = packet->GetMediaLength();
+		//Check size
+		if (len)
+		{
+			//Check if first nal
+			BYTE nalUnitType = payload[0] & 0x1f;
+
+			//FU-A
+			if (nalUnitType == 28 && len>2)
+				//Get first nal type
+				nalUnitType = payload[1] & 0x1f;
+			//STAP-A
+			else if (nalUnitType == 24 && len>3)
+				//Get first nal type
+				nalUnitType = payload[3] & 0x1f;
+
+			//Check for IDR/PPS/SPS nals
+			if (nalUnitType==5 || nalUnitType==7 || nalUnitType==8)
+				//Key frame
+				packet->SetKeyFrame(true);
+		}
 	}
+	//UltraDebug("-H264LayerSelector::GetLayerIds() | [isKeyFrame:%d]\n",packet->IsKeyFrame());
 	
-	//UltraDebug("-VP9LayerSelector::GetLayerIds() | [tid:%u,sid:%u]\n",info.temporalLayerId,info.spatialLayerId);
-	
-	//Return layer info
-	return info;
+	//Return layer infos
+	return infos;
 }
 	

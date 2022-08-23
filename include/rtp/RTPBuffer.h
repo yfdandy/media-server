@@ -122,23 +122,28 @@ public:
 	{
 		this->maxWaitTime = maxWaitTime;
 	}
+
+	DWORD GetMaxWaitTime() const
+	{
+		return maxWaitTime;
+	}
 	
 	DWORD GetMinWaitedime() const
 	{
-		//Get value
-		DWORD minValueInWindow =  waited.GetMinValueInWindow();
-		//return it
-		return minValueInWindow;
+		return waited.GetMinValueInWindow();
 	}
 	
 	DWORD GetMaxWaitedTime() const
 	{
-		//Get value
-		DWORD maxValueInWindow =  waited.GetMaxValueInWindow();
-		//return it
-		return maxValueInWindow;
+		return waited.GetMaxValueInWindow();
 	}
 	
+
+	std::pair<DWORD, DWORD> GetMinMaxWaitedTime() const
+	{
+		return waited.GetMinMaxValueInWindow();
+	}
+
 	long double GetAvgWaitedTime() const
 	{
 		//Get value
@@ -150,6 +155,11 @@ public:
 	DWORD GetNumDiscardedPackets() const
 	{
 		return discarded;
+	}
+
+	DWORD GetNextPacketSeqNumber() const
+	{
+		return next;
 	}
 	
 	QWORD GetWaitTime(QWORD now)
@@ -178,7 +188,7 @@ public:
 private:
 	//The event list
 	std::map<DWORD,RTPPacket::shared> packets;
-	Acumulator waited;
+	Acumulator<uint32_t, uint64_t> waited;
 	
 	bool  hurryUp		= false;
 	DWORD next		= (DWORD)-1;

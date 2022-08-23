@@ -7,127 +7,78 @@
 #include "rtp/RTPPacket.h"
 #include "rtp/RTPSource.h"
 #include "rtp/RTCPReport.h"
+#include "acumulator.h"
+#include "WrapExtender.h"
 
 struct RTPIncomingSource : public RTPSource
 {
+	DWORD	numFrames;
+	DWORD	numFramesDelta;
 	DWORD	lostPackets;
+	DWORD	lostPacketsDelta;
+	DWORD   lostPacketsGapCount;
+	DWORD   lostPacketsMaxGap;
 	DWORD	dropPackets;
 	DWORD	totalPacketsSinceLastSR;
 	DWORD	totalBytesSinceLastSR;
 	DWORD	minExtSeqNumSinceLastSR ;
 	DWORD   lostPacketsSinceLastSR;
 	QWORD   lastReceivedSenderNTPTimestamp;
+	QWORD   lastReceivedSenderTime;
 	QWORD   lastReceivedSenderReport;
 	QWORD   lastReport;
 	QWORD	lastPLI;
 	DWORD   totalPLIs;
 	DWORD	totalNACKs;
 	QWORD	lastNACKed;
-	DWORD	lastTimestamp;
 	QWORD	lastTime;
+	QWORD	lastTimestamp;
+	QWORD	lastCaptureTime;
+	QWORD	lastCaptureTimestamp;
+	QWORD   firstReceivedSenderTime;
+	QWORD   firstReceivedSenderTimestamp;
+
+	
+	int32_t frameDelay;
+	int32_t frameDelayMax;
+	int32_t frameCaptureDelay;
+	int32_t frameCaptureDelayMax;
+
+	int64_t skew;
+	double  drift;
+	bool	aggregatedLayers;
+	WrapExtender<uint32_t,uint64_t> timestampExtender;
+	WrapExtender<uint32_t,uint64_t> lastReceivedSenderRTPTimestampExtender;
 	std::map<WORD,LayerSource> layers;
 	
-	RTPIncomingSource() : RTPSource()
-	{
-		lostPackets		 = 0;
-		dropPackets		 = 0;
-		totalPacketsSinceLastSR	 = 0;
-		totalBytesSinceLastSR	 = 0;
-		lostPacketsSinceLastSR   = 0;
-		lastReceivedSenderNTPTimestamp = 0;
-		lastReceivedSenderReport = 0;
-		lastReport		 = 0;
-		lastPLI			 = 0;
-		totalPLIs		 = 0;
-		totalNACKs		 = 0;
-		lastNACKed		 = 0;
-		lastTimestamp		 = 0;
-		lastTime		 = 0;
-		minExtSeqNumSinceLastSR  = RTPPacket::MaxExtSeqNum;
-	}
 	
-	void Update(QWORD now,DWORD seqNum,DWORD size,const LayerInfo &layerInfo)
-	{
-		//Update source normally
-		RTPIncomingSource::Update(now,seqNum,size);
-		//Check layer info is present
-		if (layerInfo.IsValid())
-		{
-			//Find layer
-			auto it = layers.find(layerInfo.GetId());
-			//If not found
-			if (it==layers.end())
-				//Add new entry
-				it = layers.emplace(layerInfo.GetId(),LayerSource(layerInfo)).first;
-			//Update layer source
-			it->second.Update(now,size);
-		}
-	}
+	Acumulator<uint32_t, uint64_t> acumulatorFrames;
+	Acumulator<int32_t, int64_t>   acumulatorFrameDelay;
+	Acumulator<int32_t, int64_t>   acumulatorCaptureDelay;
+	Acumulator<uint32_t, uint64_t> acumulatorLostPackets;
 	
-	virtual void Update(QWORD now,DWORD seqNum,DWORD size)
-	{
-		//Store last seq number before updating
-		//DWORD lastExtSeqNum = extSeqNum;
-			
-		//Update source
-		RTPSource::Update(now,seqNum,size);
-		
-		//Update seq num
-		SetSeqNum(seqNum);
-		
-		totalPacketsSinceLastSR++;
-		totalBytesSinceLastSR += size;
-
-		//Check if it is the min for this SR
-		if (extSeqNum<minExtSeqNumSinceLastSR)
-			//Store minimum
-			minExtSeqNumSinceLastSR = extSeqNum;
-		
-		/*TODO: calculate jitter
-		//If we have a not out of order pacekt
-		if (lastExtSeqNum != extSeqNum)
-		{
-			//If it is not first one and not from the same frame
-			if (lastTimestamp && lastTimestamp<timestamp)
-			{
-				//Get diff from previous
-				QWORD diff = (lastTime-now)/1000;
-
-		
-				//Get difference of arravail times
-				int d = (timestamp-lastTimestamp)-diff;
-				//Check negative
-				if (d<0)
-					//Calc abs
-					d = -d;
-				//Calculate variance
-				int v = d - jitter;
-				//Calculate jitter
-				jitter += v/16;
-			}
-			//Update rtp timestamp
-			lastTime = timestamp;
-		}
-		 */
-	}
-	
-	virtual void Reset()
-	{
-		RTPSource::Reset();
-		lostPackets		 = 0;
-		dropPackets		 = 0;
-		totalPacketsSinceLastSR	 = 0;
-		totalBytesSinceLastSR	 = 0;
-		lostPacketsSinceLastSR   = 0;
-		lastReceivedSenderNTPTimestamp = 0;
-		lastReceivedSenderReport = 0;
-		lastReport		 = 0;
-		lastPLI			 = 0;
-		totalPLIs		 = 0;
-		lastNACKed		 = 0;
-		minExtSeqNumSinceLastSR  = RTPPacket::MaxExtSeqNum;
-	}
+	RTPIncomingSource();
 	virtual ~RTPIncomingSource() = default;
+	
+	WORD  ExtendSeqNum(WORD seqNum);
+	WORD  RecoverSeqNum(WORD osn);
+	
+	DWORD ExtendTimestamp(DWORD timestamp);
+	DWORD RecoverTimestamp(DWORD timestamp);
+	
+	void Update(QWORD now,DWORD seqNum,DWORD size,const std::vector<LayerInfo> &layerInfos, bool aggreagtedLayers);
+	
+	void Process(QWORD now, const RTCPSenderReport::shared& sr);
+	void SetLastTimestamp(QWORD now, QWORD timestamp, QWORD captureTimestamp = 0);
+	
+	virtual void Update(QWORD now,DWORD seqNum,DWORD size) override;
+	virtual void Update(QWORD now) override;
+	virtual void Reset() override;
+	
+	void AddLostPackets(QWORD now, DWORD lost) 
+	{
+		lostPacketsDelta = acumulatorLostPackets.Update(now, lost); 
+	}
 	
 	RTCPReport::shared CreateReport(QWORD now);
 };

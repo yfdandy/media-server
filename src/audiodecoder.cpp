@@ -70,9 +70,9 @@ void AudioDecoderWorker::AddAudioOuput(AudioOutput* output)
 	//Add it
 	outputs.insert(output);
 	//If we hace started
-	if (decoding)
+	if (decoding && rate)
 		//Start it
-		output->StartPlaying(rate);
+		output->StartPlaying(rate, numChannels);
 }
 
 void AudioDecoderWorker::RemoveAudioOutput(AudioOutput* output)
@@ -112,20 +112,21 @@ void AudioDecoderWorker::SetAACConfig(const uint8_t* data,const size_t size)
 
 	//Update rate
 	rate = codec->GetRate();
+	numChannels = codec->GetNumChannels();
 
 	//For each output
 	for (auto output : outputs)
 		//Start playing again
-		output->StartPlaying(rate);
+		output->StartPlaying(rate, numChannels);
 }
 
 
 int AudioDecoderWorker::Decode()
 {
-	SWORD		raw[2048];
-	DWORD		rawSize=2048;
-	DWORD		frameTime=0;
-	DWORD		lastTime=0;
+	SWORD		raw[4096];
+	DWORD		rawSize=4096;
+	QWORD		frameTime=0;
+	QWORD		lastTime=0;
 
 	Log(">AudioDecoderWorker::Decode()\n");
 
@@ -170,26 +171,44 @@ int AudioDecoderWorker::Decode()
 
 				//Update rate
 				rate = codec->GetRate();
+				numChannels = codec->GetNumChannels();
 
 				//For each output
 				for (auto output : outputs)
 					//Start playing again
-					output->StartPlaying(rate);	
+					output->StartPlaying(rate, numChannels);
 			}
 
 			//Lo decodificamos
 			int len = codec->Decode(packet->GetMediaData(),packet->GetMediaLength(),raw,rawSize);
 
-			//Obtenemos el tiempo del frame
-			frameTime = packet->GetTimestamp() - lastTime;
+			//Check if we have a different channel count
+			if (numChannels != codec->GetNumChannels())
+			{
+				//Update rate
+				rate = codec->GetRate();
+				numChannels = codec->GetNumChannels();
 
-			//Actualizamos el ultimo envio
-			lastTime = packet->GetTimestamp();
-		
+				//For each output
+				for (auto output : outputs)
+				{
+					//Stop it
+					output->StopPlaying();
+					//Start playing again
+					output->StartPlaying(rate, numChannels);
+				}
+			}
+
+			//Get last frame time duration
+			frameTime = packet->GetExtTimestamp() - lastTime;
+
+			//Update last sent time
+			lastTime = packet->GetExtTimestamp();
+
 			//For each output
 			for (auto output : outputs)
 				//Send buffer
-				output->PlayBuffer(raw,len,frameTime);
+				output->PlayBuffer(raw, len, frameTime);
 		}
 	}
 

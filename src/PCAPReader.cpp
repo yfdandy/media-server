@@ -21,19 +21,19 @@ PCAPReader::~PCAPReader()
 
 bool PCAPReader::Open(const char* file)
 {
-	Log("-Opening pcap file [%s]\n",file);
+	Log("-PCAPReader::Open() | Opening pcap file [%s]\n",file);
 	// Open filename
 	if ((fd = open(file, O_RDONLY))==-1)
-		return Error("Error opening pcap file\n");
+		return Error("-PCAPReader::Open() | Error opening pcap file\n");
 
 	//Read the header
 	if (read(fd,data,PCAP_HEADER_SIZE)!=PCAP_HEADER_SIZE)
-		return Error("Error reading magic cookie from pcap file\n");
+		return Error("-PCAPReader::Open() | Error reading magic cookie from pcap file\n");
 
 	uint32_t cookie = get4(data,0);
 
 	if (cookie!=PCAP_MAGIC_COOKIE)
-		return Error("PCAP magic cookie %x nof founr, got %x, reversed are not supported (yet).\n",PCAP_MAGIC_COOKIE,cookie);
+		return Error("-PCAPReader::Open() | PCAP magic cookie %x nof founr, got %x, reversed are not supported (yet).\n",PCAP_MAGIC_COOKIE,cookie);
 
 	return true;
 }
@@ -120,7 +120,7 @@ uint64_t PCAPReader::Seek(const uint64_t time)
 		uint32_t seconds	= get4(data,0);
 		uint32_t nanoseonds	= get4(data,4);
 		uint32_t packetSize	= get4(data,8);
-		uint32_t packetLen	= get4(data,12);
+[[maybe_unused]]uint32_t packetLen	= get4(data,12);
 		uint64_t ts = (((uint64_t)seconds)*1000000+nanoseonds);
 
 		//If we have got to the correct time

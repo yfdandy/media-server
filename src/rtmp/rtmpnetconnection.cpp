@@ -10,45 +10,52 @@ RTMPNetConnection::~RTMPNetConnection()
 void RTMPNetConnection::SendStatus(const RTMPNetStatusEventInfo &info,const wchar_t *message)
 {
 	//Lock mutexk
-	lock.WaitUnusedAndLock();
+	listenerLock.Lock();
 	//For each listener
-	for(Listeners::iterator it = listeners.begin(); it!=listeners.end(); ++it)
+	for(auto it = listeners.begin(); it!=listeners.end(); ++it)
 		//Disconnect
 		(*it)->onNetConnectionStatus(info,message);
 	//Unlock
-	lock.Unlock();
+	listenerLock.Lock();
 }
 	
 void RTMPNetConnection::Disconnect()
 {
-	//Lock mutexk
-	lock.WaitUnusedAndLock();
-	//For each stream
-	for(RTMPNetStreams::iterator it = streams.begin(); it!=streams.end(); ++it)
-		//Delete it
-		delete(*it);
+	//Lock mutex
+	streamLock.Lock();
 	//Clean streams
 	streams.clear();
+	//Unlock
+	streamLock.Unlock();
+	
+	//Lock listeners
+	listenerLock.Lock();
 	//For each listener
-	for(Listeners::iterator it = listeners.begin(); it!=listeners.end(); ++it)
+	for(auto it = listeners.begin(); it!=listeners.end(); ++it)
 		//Disconnect
 		(*it)->onNetConnectionDisconnected();
+	//Remove all listeners
+	listeners.clear();
 	//Unlock
-	lock.Unlock();
+	listenerLock.Unlock();
 }
 
-int RTMPNetConnection::RegisterStream(RTMPNetStream* stream)
+void RTMPNetConnection::Disconnected()
+{
+}
+
+int RTMPNetConnection::RegisterStream(const RTMPNetStream::shared& stream)
 {
 	Log(">RTMPNetConnection::RegisterStream() [tag:%ls]\n",stream->GetTag().c_str());
 
 	//Lock mutexk
-	lock.WaitUnusedAndLock();
+	streamLock.Lock();
 	//Apend
-	streams.insert(stream);
+	streams[stream->GetStreamId()] = stream;
 	//Get number of streams
 	DWORD num = streams.size();
 	//Unlock
-	lock.Unlock();
+	streamLock.Unlock();
 
 	Log("<RTMPNetConnection::RegisterStream() [size:%d]\n",num);
 	
@@ -56,23 +63,19 @@ int RTMPNetConnection::RegisterStream(RTMPNetStream* stream)
 	return num;
 }
 
-int RTMPNetConnection::UnRegisterStream(RTMPNetStream* stream)
+int RTMPNetConnection::UnRegisterStream(const RTMPNetStream::shared& stream)
 {
 
 	Log(">RTMPNetConnection::UnRegisterStream() [tag:%ls]\n",stream->GetTag().c_str());
 
 	//Lock mutexk
-	lock.WaitUnusedAndLock();
-	//Find it
-	RTMPNetStreams::iterator it = streams.find(stream);
-	//If present
-	if (it!=streams.end())
-		//erase it
-		streams.erase(it);
+	streamLock.Lock();
+	//erase it
+	streams.erase(stream->GetStreamId());
 	//Get number of streams
 	DWORD num = streams.size();
 	//Unlock
-	lock.Unlock();
+	streamLock.Unlock();
 
 	Log("<RTMPNetConnection::UnRegisterStream()[size:%d]\n",num);
 
@@ -83,25 +86,21 @@ int RTMPNetConnection::UnRegisterStream(RTMPNetStream* stream)
 void RTMPNetConnection::AddListener(Listener* listener)
 {
 	//Lock mutexk
-	lock.WaitUnusedAndLock();
+	listenerLock.Lock();
 	//Apend
 	listeners.insert(listener);
 	//Unlock
-	lock.Unlock();
+	listenerLock.Unlock();
 }
 
 
 void RTMPNetConnection::RemoveListener(Listener* listener)
 {
 	//Lock mutexk
-	lock.WaitUnusedAndLock();
-	//Find it
-	Listeners::iterator it = listeners.find(listener);
-	//If present
-	if (it!=listeners.end())
-		//erase it
-		listeners.erase(it);
+	listenerLock.Lock();
+	//erase it
+	listeners.erase(listener);
 	//Unlock
-	lock.Unlock();
+	listenerLock.Unlock();
 	
 }

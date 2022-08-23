@@ -77,12 +77,7 @@ struct VP8PayloadDescriptor
 		{
 			len++;
 			if (pictureIdPresent)
-			{
-				if (pictureId>7)
-					len+=2;
-				else
-					len+=1;
-			}
+				len += pictureIdLength;
 			if (temporalLevelZeroIndexPresent)
 				len++;
 			if (temporalLayerIndexPresent || keyIndexPresent)
@@ -225,7 +220,7 @@ struct VP8PayloadDescriptor
 		//Check if picture id present
 		if (pictureIdPresent)
 		{
-			//Check long is the picture id
+			//Check how long is the picture id
 			if (pictureIdLength == 2)
 			{
 				//Set picture id
@@ -263,7 +258,7 @@ struct VP8PayloadDescriptor
 		return len;
 	}
 
-	void Dump()
+	void Dump() const
 	{
 		Debug("[VP8PayloadDescriptor \n");
 		Debug("\t extendedControlBitsPresent=%d\n"	, extendedControlBitsPresent);
@@ -314,7 +309,7 @@ struct VP8PayloadHeader
 		firstPartitionSize	= data[0] >> 5;
 		showFrame		= data[0] >> 4 & 0x01;
 		version			= data[0] >> 1 & 0x07;
-		isKeyFrame		= (data[0] & 0x0F) == 0;
+		isKeyFrame		= (data[0] & 0x01) == 0;
 
 		//check if more
 		if (isKeyFrame)
@@ -330,13 +325,13 @@ struct VP8PayloadHeader
 				//Invalid
 				return Error("Invalid start code [%p]\n",get3(data,3));
 			}
-			//Get size
-			WORD hor = get2(data,6);
-			WORD ver = get2(data,8);
+			//Get size in le
+			WORD hor = data[7]<<8 | data[6];
+			WORD ver = data[9]<<8 | data[8];
 			//Get dimensions and scale
-			width		= hor & 0xC0;
+			width		= hor & 0x3fff;
 			horizontalScale = hor >> 14;
-			height		= ver & 0xC0;
+			height		= ver & 0x3fff;
 			verticalScale	= ver >> 14;
 			//Key frame
 			return 10;
@@ -366,6 +361,50 @@ struct VP8PayloadHeader
 		}
 		Debug("/]\n");
 	}
+};
+
+class VP8CodecConfig
+{
+public:
+	DWORD Serialize(BYTE* buffer,DWORD length) const
+	{
+		if (length<GetSize())
+			return 0;
+		
+		int l = 0;
+		
+		buffer[l++] = profile;
+		buffer[l++] = level;
+		buffer[l++] = (bitDepth << 4) | (chromaSubsampling << 1) | (videoFullRangeFlag ? 1 : 0);
+		buffer[l++] = colorPrimaries;
+		buffer[l++] = transferCharacteristics;
+		buffer[l++] = matrixCoefficients;
+		//add initialization data length
+		set2(buffer,l,initializationData.size());
+		//Inc leght
+		l += 2;
+		//Copy it
+		memcpy(buffer+l,initializationData.data(),initializationData.size());
+		//Inc length
+		l += initializationData.size();
+		//Done
+		return l;
+	}
+	
+	DWORD GetSize() const
+	{
+		return 8 + initializationData.size();
+	}
+private:
+	uint8_t profile			= 0;
+	uint8_t level			= 10;
+	uint8_t bitDepth		= 8;
+	uint8_t chromaSubsampling	= 0; //CHROMA_420
+	bool videoFullRangeFlag		= false;
+	uint8_t colorPrimaries		= 2; //Unspecified
+	uint8_t transferCharacteristics	= 2; //Unspecified
+	uint8_t matrixCoefficients	= 2; //Unspecified
+	std::vector<uint8_t> initializationData;
 };
 #endif	/* VP8_H */
 

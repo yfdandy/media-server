@@ -6,10 +6,10 @@
 #include <set>
 
 #include "config.h"
-#include "use.h"
 #include "rtp/RTPPacket.h"
 #include "rtp/RTPOutgoingSource.h"
-
+#include "TimeService.h"
+#include "CircularBuffer.h"
 
 struct RTPOutgoingSourceGroup
 {
@@ -19,17 +19,19 @@ public:
 		public:
 			virtual void onPLIRequest(RTPOutgoingSourceGroup* group,DWORD ssrc) = 0;
 			virtual void onREMB(RTPOutgoingSourceGroup* group,DWORD ssrc,DWORD bitrate) = 0;
+			virtual void onEnded(RTPOutgoingSourceGroup* group) = 0;
 		
 	};
 public:
-	RTPOutgoingSourceGroup(MediaFrame::Type type);
-	RTPOutgoingSourceGroup(std::string &mid,MediaFrame::Type type);
+	RTPOutgoingSourceGroup(MediaFrame::Type type,TimeService& timeService);
+	RTPOutgoingSourceGroup(const std::string &mid,MediaFrame::Type type, TimeService& timeService);
+	~RTPOutgoingSourceGroup();
 	
 	void AddListener(Listener* listener);
 	void RemoveListener(Listener* listener);
 	void onPLIRequest(DWORD ssrc);
 	void onREMB(DWORD ssrc,DWORD bitrate);
-	
+	TimeService& GetTimeService()	{ return timeService; }
 	RTPOutgoingSource* GetSource(DWORD ssrc);
 	
 	void Update(QWORD now);
@@ -37,17 +39,19 @@ public:
 	//RTX packets
 	void AddPacket(const RTPPacket::shared& packet);
 	RTPPacket::shared GetPacket(WORD seq) const;
-	void ReleasePackets(QWORD until);
+
+	void Stop();
+	
 	
 public:	
 	std::string mid;
 	MediaFrame::Type type;
 	RTPOutgoingSource media;
-	RTPOutgoingSource fec;
 	RTPOutgoingSource rtx;
+	QWORD lastUpdated = 0;
 private:	
-	mutable Mutex listenersMutex;
-	std::map<DWORD,RTPPacket::shared> packets;
+	TimeService& timeService;
+	CircularBuffer<RTPPacket::shared, uint16_t, 512> packets;
 	std::set<Listener*> listeners;
 };
 

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <cstddef>  // size_t
 #include <cstdint> 
+#include <limits>
 #include <map>
 #include <vector>
 #include <sstream>
@@ -36,6 +37,7 @@
 #define	SQCIF	20	// 128  x 96	AR:	1,333333333
 #define	SCIF	21	// 256  x 192	AR:	1,333333333
 #define	HD1080P	22	// 1920 x 1080  AR:     1,777777778
+#define UW720P  23	// 1680 x 720   AR:	2,333333333
 
 
 
@@ -91,6 +93,7 @@ inline DWORD GetWidth(DWORD size)
 		case SQCIF:	return 128;
 		case SCIF:	return 256;
 		case HD1080P:	return 1920;
+		case UW720P:	return 1680;
 	}
 	//Nothing
 	return 0;
@@ -124,6 +127,7 @@ inline DWORD GetHeight(DWORD size)
 		case SQCIF:	return 96;
 		case SCIF:	return 192;
 		case HD1080P:	return 1080;
+		case UW720P:	return 720;
 	}
 	//Nothing
 	return 0;
@@ -139,9 +143,17 @@ public:
 	
 	void SetProperty(const char* key,int intval)
 	{
-		std::ostringstream val;
-		val << intval;
-		SetProperty(std::string(key),val.str());
+		SetProperty(std::string(key),std::to_string(intval));
+	}
+
+	void SetProperty(const char* key,DWORD val)
+	{
+		SetProperty(std::string(key),std::to_string(val));
+	}
+
+	void SetProperty(const char* key,QWORD val)
+	{
+		SetProperty(std::string(key),std::to_string(val));
 	}
 
 	void SetProperty(const char* key,const char* val)
@@ -333,6 +345,13 @@ inline void* malloc32(size_t size)
 		return NULL;
 	return ptr;
 }
+
+struct VideoOrientation
+{
+	bool facing = 0;
+	bool flip = 0;
+	BYTE rotation = 0;
+};
 
 class ByteBuffer
 {

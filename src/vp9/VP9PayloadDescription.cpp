@@ -30,11 +30,17 @@ DWORD VP9InterPictureDependency::GetSize()
 
 DWORD VP9InterPictureDependency::Parse(const BYTE* data, DWORD size)
 {
+	//Check size
+	if (size<1)
+		return 0;
 	//Get values
 	temporalLayerId = data[0] >> 5;
 	switchingPoint  = data[0] & 0x10;
 	//Number of pdifs
 	BYTE pdifs = data[0] >> 2 & 0x03;
+	//Check size
+	if (size<pdifs+1u)
+		return 0;
 	//Get each one
 	for (BYTE j=0;j<pdifs;++j)
 		//Get it
@@ -147,7 +153,7 @@ DWORD VP9ScalabilityScructure::Parse(const BYTE* data, DWORD size)
 	//Parse header
 	numberSpatialLayers			= (data[0] >> 5) + 1;
 	spatialLayerFrameResolutionPresent	= data[0] & 0x10;
-	groupOfFramesDescriptionPresent		= data[0] & 0x0F;
+	groupOfFramesDescriptionPresent		= data[0] & 0x08;
 	
 	//Heder
 	DWORD len =  1;
@@ -263,7 +269,7 @@ void VP9ScalabilityScructure::Dump()
 	Debug("\t[VP9ScalabilityScructure \n");
 	Debug("\t\t numberSpatialLayers=%d\n"			, numberSpatialLayers);
 	Debug("\t\t spatialLayerFrameResolutionPresent=%d\n"	, spatialLayerFrameResolutionPresent);
-	Debug("\t\t groupOfFramesDescriptionPresent=%d\n"		, groupOfFramesDescriptionPresent);
+	Debug("\t\t groupOfFramesDescriptionPresent=%d\n"	, groupOfFramesDescriptionPresent);
 	Debug("\t]\n");
 	if (spatialLayerFrameResolutionPresent)
 		for (auto it = spatialLayerFrameResolutions.begin(); it!= spatialLayerFrameResolutions.end(); ++it)
@@ -455,17 +461,22 @@ DWORD VP9PayloadDescription::Parse(const BYTE* data, DWORD size)
 		}
 	}
 		
-	if (flexibleMode && pictureIdPresent)
+	if (flexibleMode && interPicturePredictedLayerFrame)
 	{
-		//Check kength
-		if (size<len+1)
-			//Error
-			return 0;
+		//at least 1
+		bool next = true;
 		//Check last diff mark
-		while (data[len] & 0x01)
+		while (next)
 		{
+			//Check length
+			if (size<len+1)
+				//Error
+				return 0;
 			//Add ref index
 			referenceIndexDiff.push_back(data[len]>>1);
+			//Are there more?
+			next = data[len] & 0x01;
+			
 			//Inc len
 			len ++;
 		}	
@@ -548,23 +559,27 @@ DWORD VP9PayloadDescription::Serialize(BYTE *data,DWORD size)
 		}
 	}
 		
-	if (flexibleMode && pictureIdPresent)
-	{
-		//Serialize picture refid
-		for (auto it=referenceIndexDiff.begin(); it!=referenceIndexDiff.end(); ++it)
-		{
-			//Add ref index
-			data[len] = (*it) << 1;
-			//if  not last
-			if (it!=referenceIndexDiff.end())
-				//Add marker
-				data[len] = data[len] | 0x01;
-			//Inc len
-			len ++;
-		}	
-	}
+        if (flexibleMode && interPicturePredictedLayerFrame)
+        {
+                bool next = true;
+                //Check last diff mark
+                while (next)
+                {
+                        //Check length
+                        if (size<len+1)
+                                //Error
+                                return 0;
+                        //Add ref index
+                        referenceIndexDiff.push_back(data[len]>>1);
+                        //Are there more?
+                        next = data[len] & 0x01;
 
-	
+                        //Inc len
+                        len ++;
+                }
+        }
+
+
 	if (scalabiltiyStructureDataPresent)
 	{
 		//Get SS size

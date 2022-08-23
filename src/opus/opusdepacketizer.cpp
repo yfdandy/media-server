@@ -5,7 +5,13 @@ MediaFrame* OpusDepacketizer::AddPacket(const RTPPacket::shared& packet)
 	//Reset frame
 	ResetFrame();
 	//Set timestamp
-	frame.SetTimestamp(packet->GetTimestamp());
+	frame.SetTimestamp(packet->GetExtTimestamp());
+	//Set clock rate
+	frame.SetClockRate(packet->GetClockRate());
+	//Set time
+	frame.SetTime(packet->GetTime());
+	//Set sender time
+	frame.SetSenderTime(packet->GetSenderTime());
 	//Set SSRC
 	frame.SetSSRC(packet->GetSSRC());
 	//Add payload
@@ -24,19 +30,17 @@ MediaFrame* OpusDepacketizer::AddPayload(const BYTE* payload,DWORD payloadLen)
 	//Add RTP packet
 	frame.AddRtpPacket(pos,payloadLen,NULL,0);
 	
-	/*
-	 *
-		0 1 2 3 4 5 6 7
-	       +-+-+-+-+-+-+-+-+
-	       | config  |s| c |
-	       +-+-+-+-+-+-+-+-+
-	 *
-	 */
 	//Get opus toc
-	uint8_t toc = payload[0];
+	auto [mode, bandwidth, frameSize, stereo, codeNumber ] = OpusTOC::TOC(payload[0]);
 	
 	//Set number of channels
-	uint8_t numChannels = toc & 0x04 ? 2 : 1;
+	uint8_t numChannels = stereo ? 2 : 1;
+
+	//Set it
+	frame.SetNumChannels(numChannels);
+	
+	//Set duration
+	frame.SetDuration(frameSize);
 	
 	//Check if we have to change config
 	if (!frame.HasCodecConfig() || numChannels!=config.GetOutputChannelCount())

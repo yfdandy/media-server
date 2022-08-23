@@ -4,9 +4,9 @@
 #include <set>
 #include <string>
 #include <list>
+#include <optional>
 
 #include "config.h"
-#include "use.h"
 #include "rtp/RTPPacket.h"
 #include "rtp/RTPIncomingMediaStream.h"
 #include "rtp/RTPIncomingSource.h"
@@ -21,20 +21,23 @@ class RTPIncomingSourceGroup :
 {
 public:	
 	RTPIncomingSourceGroup(MediaFrame::Type type,TimeService& timeService);
-	virtual ~RTPIncomingSourceGroup() = default;
+	virtual ~RTPIncomingSourceGroup();
 	
 	RTPIncomingSource* GetSource(DWORD ssrc);
 	virtual void AddListener(RTPIncomingMediaStream::Listener* listener) override;
 	virtual void RemoveListener(RTPIncomingMediaStream::Listener* listener) override;
-	virtual DWORD GetMediaSSRC() override { return media.ssrc; }
-	int AddPacket(const RTPPacket::shared &packet, DWORD size);
+	virtual DWORD GetMediaSSRC()		override { return media.ssrc;	}
+	virtual TimeService& GetTimeService()	override { return timeService;	}
+	int AddPacket(const RTPPacket::shared &packet, DWORD size, QWORD now);
 	RTPIncomingSource* Process(RTPPacket::shared &packet);
 	void Bye(DWORD ssrc);
 	
+	void SetRTXEnabled(bool enabled);
+	void SetMaxWaitTime(DWORD maxWaitingTime);
+	void ResetMaxWaitTime();
 	void ResetPackets();
 	void Update();
-	void Update(QWORD now);
-	void SetRTT(DWORD rtt);
+	void SetRTT(DWORD rtt, QWORD now);
 	std::list<RTCPRTPFeedback::NACKField::shared>  GetNacks() { return losts.GetNacks(); }
 	
 	void Start(bool remb = false);
@@ -56,7 +59,6 @@ public:
 	DWORD rtt = 0;
 	MediaFrame::Type type;
 	RTPIncomingSource media;
-	RTPIncomingSource fec;
 	RTPIncomingSource rtx;
         DWORD remoteBitrateEstimation = 0;
 	
@@ -66,6 +68,8 @@ public:
 	DWORD maxWaitedTime = 0;
 	long double avgWaitedTime = 0;
 	
+	QWORD lastUpdated = 0;
+
 	//TODO: FIx
 	RemoteRateEstimator remoteRateEstimator;
 private:
@@ -73,12 +77,16 @@ private:
 	Timer::shared	dispatchTimer;
 	RTPLostPackets	losts;
 	RTPBuffer	packets;
-	Mutex		listenerMutex;
 	std::set<RTPIncomingMediaStream::Listener*>  listeners;
+	std::optional<std::vector<bool>> activeDecodeTargets;
+	std::optional<TemplateDependencyStructure> templateDependencyStructure;
 	
+	bool  isRTXEnabled = true;
 	WORD  rttrtxSeq	 = 0 ;
 	QWORD rttrtxTime = 0;
 	bool remb	 = false;
+	std::optional<DWORD> maxWaitingTime;
+	
 };
 
 #endif /* RTPINCOMINGSOURCEGROUP_H */

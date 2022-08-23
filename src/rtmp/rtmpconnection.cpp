@@ -6,11 +6,14 @@
 #include <signal.h>
 #include <errno.h>
 #include <stdio.h>
+#include <thread>
 #include "log.h"
 #include "assertions.h"
 #include "tools.h"
 #include "rtmp/rtmphandshake.h"
 #include "rtmp/rtmpconnection.h"
+
+constexpr int PoolTimeout = 5E3; //5s
 
 /********************************
  * RTMP connection demultiplex buffers streams from incoming raw data
@@ -44,7 +47,6 @@ RTMPConnection::RTMPConnection(Listener *listener)
 	inited = false;
 	running = false;
 	socket = FD_INVALID;
-	setZeroThread(&thread);
 	//Set initial time
 	gettimeofday(&startTime,0);
 	//Init mutex
@@ -61,7 +63,7 @@ RTMPConnection::RTMPConnection(Listener *listener)
 
 RTMPConnection::~RTMPConnection()
 {
-	Log("-RTMPConnection::~RTMPConnection() [0x%x]\n",this);
+	Log("-RTMPConnection::~RTMPConnection() [%p]\n",this);
 	//End just in case
 	End();
 	//For each chunk strean
@@ -98,9 +100,14 @@ void RTMPConnection::Start()
 {
 	//We are running
 	running = true;
-
-	//Create thread
-	createPriorityThread(&thread,run,this,0);
+	
+	//Start thread and run
+	thread = std::thread([=](){
+		//Block signals to avoid exiting on SIGUSR1
+		blocksignals();
+		//Run
+		Run(); 
+	});
 }
 
 void RTMPConnection::Stop()
@@ -114,8 +121,6 @@ void RTMPConnection::Stop()
 		shutdown(socket,SHUT_RDWR);
 		//Will cause poll to return
 		MCU_CLOSE(socket);
-		//No socket
-		socket = FD_INVALID;
 	}
 }
 
@@ -134,13 +139,16 @@ int RTMPConnection::End()
 	//Stop just in case
 	Stop();
 
-	//If running
-	if (!isZeroThread(thread))
+	//If thread is already running
+	if (thread.joinable())
 	{
-		//Wait for server thread to close
-		pthread_join(thread,NULL);
-		//No thread
-		setZeroThread(&thread);
+		//If we are on different thread
+		if (std::this_thread::get_id()!=thread.get_id())
+			//Join it
+			thread.join();
+		else
+			//Detach as we are ending ourselves
+			thread.detach();
 	}
 
 	//Ended
@@ -149,25 +157,6 @@ int RTMPConnection::End()
 	return 1;
 }
 
-/***********************
-* run
-*       Helper thread function
-************************/
-void * RTMPConnection::run(void *par)
-{
-        Log("-RTMP Connecttion Thread [%d,0x%x]\n",getpid(),par);
-
-	//Block signals to avoid exiting on SIGUSR1
-	blocksignals();
-
-        //Obtenemos el parametro
-        RTMPConnection *con = (RTMPConnection *)par;
-
-        //Ejecutamos
-        con->Run();
-	//Exit
-	return NULL;
-}
 
 /***************************
  * Run
@@ -199,10 +188,21 @@ int RTMPConnection::Run()
 	while(running)
 	{
 		//Wait for events
-		if(poll(ufds,1,-1)<0)
+		int ret = poll(ufds,1,PoolTimeout);
+		
+		//If there was an error
+		if (ret<0)
 			//Check again
 			continue;
-
+		
+		//If timed out
+		if (ret==0)
+		{
+			//Log and exit run loop
+			Log("-RTMPConnection::Run() Timedout [connection:%p]\n",this);
+			break;
+		}
+			
 		if (ufds[0].revents & POLLOUT)
 		{
 			//Write data buffer
@@ -255,30 +255,28 @@ int RTMPConnection::Run()
 	
 	Log("-RTMPConnection::Run() Disconnecting [connection:%p]\n",this);
 
-	//Lock mutex
-	pthread_mutex_lock(&mutex);
-	
 	//If got application
 	if (app)
 	{
-		//Get first
-		RTMPNetStreams::iterator it = streams.begin();
+		//lock now
+		pthread_mutex_lock(&mutex);
 
 		//Disconnect all streams
-		while (it!=streams.end())
+		for (auto it=streams.begin(); it!=streams.end(); ++it)
 			//Delete stream
-			app->DeleteStream((it++)->second);
+			app->DeleteStream(it->second);
+		
+		//Clear stream
+		streams.clear();
+
+		//Unlock
+		pthread_mutex_unlock(&mutex);
 
 		//Disconnect application
 		app->RemoveListener(this);
 		//Disconnected
 		app->Disconnected();
-		//NO app
-		app = NULL;
 	}
-	
-	//Unlock mutex
-	pthread_mutex_unlock(&mutex);
 	
 	//Check listener
 	if (listener)
@@ -311,10 +309,8 @@ void RTMPConnection::SignalWriteNeeded()
 	//Unlock
 	pthread_mutex_unlock(&mutex);
 
-	//Check thred
-	if (!isZeroThread(thread))
-		//Signal the pthread this will cause the poll call to exit
-		pthread_kill(thread,SIGIO);
+	//Signal the pthread this will cause the poll call to exit
+	pthread_kill(thread.native_handle(),SIGIO);
 }
 
 DWORD RTMPConnection::SerializeChunkData(BYTE *data,DWORD size)
@@ -404,7 +400,6 @@ void RTMPConnection::ParseData(BYTE *data,const DWORD size)
 	//Get pointer and data size
 	BYTE *buffer = data;
 	DWORD bufferSize = size;
-	DWORD digestPosServer = 0;
 
 	//Increase current window
 	curWindowSize += size;
@@ -479,7 +474,7 @@ void RTMPConnection::ParseData(BYTE *data,const DWORD size)
 					//If we have to calculate digest
 					if (digest)
 						//calculate digest for s1 only, skipping s0
-						digestPosServer = GenerateS1Data(digesOffsetMethod,s01.GetData()+1,s01.GetSize()-1);
+						GenerateS1Data(digesOffsetMethod,s01.GetData()+1,s01.GetSize()-1);
 					//Send S01 data
 					WriteData(s01.GetData(),s01.GetSize());
 					//Move to next state
@@ -754,6 +749,8 @@ void RTMPConnection::ParseData(BYTE *data,const DWORD size)
 					state = CHUNK_HEADER_WAIT;
 					//Clean header
 					header.Reset();
+				} else if (!len) {
+					throw std::runtime_error("Could not parse message");
 				}
 				//Increase buffer length
 				chunkLen += len;
@@ -840,8 +837,8 @@ void RTMPConnection::ProcessControlMessage(DWORD streamId,BYTE type,RTMPObject* 
 					//Get response
 					DWORD ping = event->GetEventData();
 					//Get roundtrip delay
-					DWORD delay = getDifTime(&startTime)/1000-ping;
-					Log("PingResponse [ping:%d,delay:%d]\n",ping,delay);
+					rtt = getDifTime(&startTime)/1000-ping;
+					Log("PingResponse [ping:%d,delay:%d]\n",ping,rtt);
 					break;
 
 			}
@@ -866,6 +863,15 @@ void RTMPConnection::ProcessControlMessage(DWORD streamId,BYTE type,RTMPObject* 
  ************************************/
 void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cmd)
 {
+	//Ensure we have name and trans if
+	if (!cmd->HasName() || !cmd->HasTransId())
+	{
+		//Error
+		Log("-RTMPConnection::ProcessCommandMessage() | Command does not have name or transid\n");
+		//Skip
+		return;
+	}
+	
 	//Get message values
 	std::wstring name 	= cmd->GetName();
 	QWORD transId 		= cmd->GetTransId();
@@ -893,7 +899,7 @@ void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cm
 		}
 
 		//Get media stream
-		RTMPNetStream* stream = it->second;
+		auto stream = it->second;
 
 		//Ensure valid
 		if (!stream)
@@ -940,14 +946,14 @@ void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cm
 			objectEncoding = (double)obj->GetProperty(L"objectEncoding");
 
 		//Call listener
-		app = listener->OnConnect(appName,this,[=](bool accepted){
+		app = listener->OnConnect(appName,this,[=,self=shared_from_this()](bool accepted){
 			//Log
 			Log("-RTMPConnection::ProcessCommandMessage() Accepting connection [accepted:%d]\n",accepted);
 			//IF not acepted
 			if (!accepted)
 			{
 				//End connection
-				End();
+				self->End();
 				//Done
 				return;
 			}
@@ -977,9 +983,9 @@ void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cm
 			extra->AddProperty(L"objectEncoding"	,objectEncoding);
 			data->AddProperty(L"version"           	,L"3,5,1,525");
 			//Create
-			SendCommandResult(streamId,transId,params,extra);
+			self->SendCommandResult(streamId,transId,params,extra);
 			//Ping
-			PingRequest();
+			self->PingRequest();
 		});
 
 		//If it is null
@@ -987,29 +993,66 @@ void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cm
 			//Send error
 			return SendCommandError(streamId,transId);
 	} else if (name.compare(L"createStream")==0 || name.compare(L"initStream")==0) {
+		//Lock mutex
+		pthread_mutex_lock(&mutex);
+		
 		//Check if we have an application
 		if (!app)
+		{
+			//Unlock mutex
+			pthread_mutex_unlock(&mutex);
 			//Send error
 			return SendCommandError(streamId,transId);
+		}
 
 		//Assign the media string id
 		DWORD mediaStreamId = maxStreamId++;
 
 		//Call the application to create the stream
-		RTMPNetStream *stream = app->CreateStream(mediaStreamId,audioCodecs,videoCodecs,this);
+		auto stream = app->CreateStream(mediaStreamId,audioCodecs,videoCodecs,this);
 
 		//Check if it was created correctly
 		if (!stream)
+		{
+			//Unlock mutex
+			pthread_mutex_unlock(&mutex);
 			//Send error
 			return SendCommandError(streamId,transId);
-
+		}
+		
 		//Add to the streams vector
 		streams[mediaStreamId] = stream;
+		
+		//Unlock mutex
+		pthread_mutex_unlock(&mutex);
+		
 		//Create
 		SendCommandResult(streamId,transId,new AMFNull(),new AMFNumber((double)mediaStreamId));
 	} else if (name.compare(L"deleteStream")==0) {
+		//Check length
+		if (!cmd->GetExtraLength())
+		{
+			//Error
+			Warning("-RTMPConnection::ProcessCommandMessage() | deleteStream has no extra args\n");
+			//Dump
+			cmd->Dump();
+			//Skip
+			return;
+		}
+		//Get extra param
+		auto extra = cmd->GetExtra(0);
+		//Check type
+		if (!extra->CheckType(AMFData::Number))
+		{
+			//Error
+			Warning("-RTMPConnection::ProcessCommandMessage() | deleteStream stream id not a number\n");
+			//Dump
+			cmd->Dump();
+			//Skip
+			return;
+		}
 		//Get
-		DWORD mediaStreamId = ((AMFNumber*)cmd->GetExtra(0))->GetNumber();
+		DWORD mediaStreamId = ((AMFNumber*)extra)->GetNumber();
 		//Log
 		Log("-RTMPConnection::ProcessCommandMessage() Deleting stream [%d]\n",mediaStreamId);
 		
@@ -1029,10 +1072,8 @@ void RTMPConnection::ProcessCommandMessage(DWORD streamId,RTMPCommandMessage* cm
 			return SendCommandError(0,transId,NULL,NULL);
 		}
 
-		//Get media stream
-		RTMPNetStream* stream = it->second;
 		//Let the application delete the stream, it will call the callback to erase it from the stream list when appropiate
-		app->DeleteStream(stream);
+		app->DeleteStream(it->second);
 		
 		//Unlock mutex
 		pthread_mutex_unlock(&mutex);
@@ -1303,17 +1344,8 @@ void RTMPConnection::onNetConnectionStatus(const RTMPNetStatusEventInfo &info,co
 
 void RTMPConnection::onNetConnectionDisconnected()
 {
-	Log("-RTMPConnection::onNetConnectionDisconnected() [0x%x]\n",this);
+	Log("-RTMPConnection::onNetConnectionDisconnected() [%p]\n",this);
 
-	//Lock mutex
-	pthread_mutex_lock(&mutex);
-	
-	//Delete app
-	app = NULL;
-	
-	//Lock mutex
-	pthread_mutex_unlock(&mutex);
-
-	//End us
-	End();
+	//Close socket and event loop
+	Stop();
 }

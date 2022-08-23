@@ -2,6 +2,7 @@
 #define _MULTICONF_H_
 #include <map>
 #include <string>
+#include <memory>
 #include "videomixer.h"
 #include "audiomixer.h"
 #include "textmixer.h"
@@ -26,6 +27,7 @@ class MultiConf :
 public:
 	static const int AppMixerId = 1;
 	static const int AppMixerBroadcasterId = 2;
+	using shared = std::shared_ptr<MultiConf>;
 public:
 	typedef std::map<std::string,MediaStatistics> ParticipantStatistics;
 public:
@@ -136,10 +138,8 @@ public:
 	void onRequestFPU(Participant *part);
 
 	/** RTMPNetConnection */
-	//virtual void Connect(RTMPNetConnection::Listener* listener); -> Not needed to be overriden yet
-	virtual RTMPNetStream* CreateStream(DWORD streamId,DWORD audioCaps,DWORD videoCaps,RTMPNetStream::Listener* listener);
-	virtual void DeleteStream(RTMPNetStream *stream);
-	//virtual void Disconnect(RTMPNetConnection::Listener* listener);  -> Not needed to be overriden yet
+	virtual RTMPNetStream::shared CreateStream(DWORD streamId,DWORD audioCaps,DWORD videoCaps,RTMPNetStream::Listener *listener) override;
+	virtual void DeleteStream(const RTMPNetStream::shared& stream) override;
 
 	/** RTMPClientConnection for pubblishers*/
 	virtual void onConnected(RTMPClientConnection* conn);

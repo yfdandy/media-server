@@ -70,13 +70,13 @@ public:
 	void SetEventSource(EvenSource *eventSource) {	this->eventSource = eventSource; }
 
 private:
-	void UpdateKalman(QWORD now,int deltaTime, int deltaTS, int deltaSize);
+	void UpdateKalman(int deltaTime, int deltaSize);
 private:
 	EvenSource *eventSource;
-	Acumulator bitrateCalc;
-	Acumulator fpsCalc;
-	Acumulator packetCalc;
-	Acumulator lostCalc;
+	Acumulator<uint32_t, uint64_t> bitrateCalc;
+	Acumulator<uint32_t, uint64_t> fpsCalc;
+	Acumulator<uint32_t, uint64_t> packetCalc;
+	Acumulator<uint32_t, uint64_t> lostCalc;
 	DWORD rtt;
 	DWORD absSendTimeCycles;
 	QWORD prevTS;
@@ -86,6 +86,8 @@ private:
 	QWORD curTime;
 	DWORD curSize;
 	DWORD prevTarget;
+	int64_t curDelta;
+	int64_t prevDelta;
 	double slope;
 	double offset;
 	double E[2][2];

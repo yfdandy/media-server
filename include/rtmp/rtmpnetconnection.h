@@ -7,10 +7,14 @@
 
 #ifndef RTMPNETCONNECTION_H
 #define	RTMPNETCONNECTION_H
+
+#include <memory>
 #include "rtmpstream.h"
 
 class RTMPNetConnection
 {
+public:
+	using shared = std::shared_ptr<RTMPNetConnection>;
 public:
 	class Listener
 	{
@@ -22,6 +26,8 @@ public:
 		virtual void onNetConnectionStatus(const RTMPNetStatusEventInfo &info,const wchar_t *message) = 0;
 		virtual void onNetConnectionDisconnected() = 0;
 	};
+
+
 public:
 	virtual ~RTMPNetConnection();
 	virtual void AddListener(Listener* listener);
@@ -30,20 +36,18 @@ public:
 	virtual void Disconnect();
 	
 	/* Interface */
-	virtual RTMPNetStream* CreateStream(DWORD streamId,DWORD audioCaps,DWORD videoCaps,RTMPNetStream::Listener *listener) = 0;
-	virtual void DeleteStream(RTMPNetStream *stream) = 0;
-	virtual void Disconnected() {};
+	virtual RTMPNetStream::shared CreateStream(DWORD streamId,DWORD audioCaps,DWORD videoCaps,RTMPNetStream::Listener *listener) = 0;
+	virtual void DeleteStream(const RTMPNetStream::shared& stream) = 0;
+	virtual void Disconnected();
 	
 protected:
-	int RegisterStream(RTMPNetStream* stream);
-	int UnRegisterStream(RTMPNetStream* stream);
+	int RegisterStream(const RTMPNetStream::shared& stream);
+	int UnRegisterStream(const RTMPNetStream::shared& stream);
 protected:
-	typedef std::set<Listener*> Listeners;
-	typedef std::set<RTMPNetStream*> RTMPNetStreams;
-protected:
-	Listeners	listeners;
-	RTMPNetStreams	streams;
-	Use		lock;
+	std::set<Listener*>			listeners;
+	std::map<DWORD,RTMPNetStream::shared>	streams;
+	Mutex					listenerLock;
+	Mutex					streamLock;
 };
 
 #endif	/* RTMPNETCONNECTION_H */

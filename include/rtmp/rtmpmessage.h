@@ -133,6 +133,7 @@ class RTMPCommandMessage
 public:
 	RTMPCommandMessage();
 	RTMPCommandMessage(const wchar_t* name,QWORD transId,AMFData* params,AMFData *extra);
+	RTMPCommandMessage(const wchar_t* name,QWORD transId,AMFData* params,const std::vector<AMFData*>& extra);
 	virtual ~RTMPCommandMessage();
 
 	virtual DWORD Parse(BYTE *data,DWORD size);
@@ -142,11 +143,15 @@ public:
 	std::wstring 	GetName() 		{ return name->GetWString(); 	}
 	std::string 	GetNameUTF8() 		{ return name->GetUTF8String();	}
 	double		GetTransId()		{ return transId->GetNumber(); 	}
+	bool		HasName()		{ return name;			}
+	bool		HasTransId()		{ return transId;		}
 	bool		HasParams()  		{ return params; 		}
 	AMFData*	GetParams()  		{ return params; 		}
 	DWORD		GetExtraLength() 	{ return extra.size(); 		}
 	AMFData*	GetExtra(DWORD i) 	{ return extra[i]; 		}
 	void		Dump();
+	RTMPCommandMessage* Clone() const;
+	
 private:
 	AMFParser 	parser;
 	AMFString* 	name;
@@ -267,6 +272,7 @@ public:
 	DWORD Parse(BYTE* buffer,DWORD size);
 	DWORD Serialize(BYTE *data,DWORD size);
 	bool IsParsed();
+	DWORD GetLeft();
 	void Dump();
 
 	bool IsControlProtocolMessage();

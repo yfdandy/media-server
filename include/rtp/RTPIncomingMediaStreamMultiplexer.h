@@ -24,10 +24,11 @@ public:
 	virtual void onRTP(RTPIncomingMediaStream* stream,const std::vector<RTPPacket::shared>& packets) override;
 	virtual void onBye(RTPIncomingMediaStream* stream) override;
 	virtual void onEnded(RTPIncomingMediaStream* stream) override;
+	virtual TimeService& GetTimeService() override { return timeService; }
+	void Stop();
 private:
 	DWORD		ssrc = 0;
 	TimeService&	timeService;
-	Mutex		listenerMutex;
 	std::set<RTPIncomingMediaStream::Listener*>  listeners;	
 };
 

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "concurrentqueue.h"
 #include "Packet.h"
+#include "ObjectPool.h"
 #include "TimeService.h"
 
 using namespace std::chrono_literals;
@@ -28,6 +29,8 @@ public:
 		Lagging,
 		Overflown
 	};
+	static bool SetAffinity(std::thread::native_handle_type thread, int cpu);
+	static bool SetThreadName(std::thread::native_handle_type thread, const std::string& name);
 private:
 	class TimerImpl : 
 		public Timer, 
@@ -51,7 +54,11 @@ private:
 		TimerImpl(const TimerImpl&) = delete;
 		virtual void Cancel() override;
 		virtual void Again(const std::chrono::milliseconds& ms) override;
-		virtual std::chrono::milliseconds GetRepeat() const override { return repeat; };
+		virtual void Repeat(const std::chrono::milliseconds& repeat) override;
+		virtual void Reschedule(const std::chrono::milliseconds& ms, const std::chrono::milliseconds& repeat) override;
+		virtual bool IsScheduled()			const override { return next.count();	}
+		virtual std::chrono::milliseconds GetNextTick()	const override { return next;		}
+		virtual std::chrono::milliseconds GetRepeat()	const override { return repeat;		}
 		
 		EventLoop&		  loop;
 		std::chrono::milliseconds next;
@@ -63,7 +70,7 @@ public:
 	virtual ~EventLoop();
 	
 	bool Start(std::function<void(void)> loop);
-	bool Start(int fd);
+	bool Start(int fd = FD_INVALID);
 	bool Stop();
 	
 	virtual const std::chrono::milliseconds GetNow() const override { return now; }
@@ -76,7 +83,13 @@ public:
 	void Run(const std::chrono::milliseconds &duration = std::chrono::milliseconds::max());
 	
 	bool SetAffinity(int cpu);
+	bool SetThreadName(const std::string& name);
+	bool SetPriority(int priority);
+	bool IsRunning() const { return running; }
 	
+
+	ObjectPool<Packet>& GetPacketPool() { return packetPool; }
+
 protected:
 	void Signal();
 	inline void AssertThread() const { assert(std::this_thread::get_id()==thread.get_id()); }
@@ -86,31 +99,50 @@ protected:
 private:
 	struct SendBuffer
 	{
-		//NO copyable
-		SendBuffer() = default; 
-		SendBuffer(const SendBuffer&) = delete; 
-		SendBuffer(SendBuffer&&) = default; 
-		SendBuffer& operator=(SendBuffer const&) = delete;
+		//Don't allocate packet on default constructor
+		SendBuffer() :
+			packet(0)
+		{
+		}
+		
+		SendBuffer(uint32_t ipAddr, uint16_t port, Packet&& packet) :
+			ipAddr(ipAddr),
+			port(port),
+			packet(std::move(packet))
+		{
+		}
+		SendBuffer(SendBuffer&& other) :
+			ipAddr(other.ipAddr),
+			port(other.port),
+			packet(std::move(other.packet))
+		{
+		}
 		SendBuffer& operator=(SendBuffer&&) = default;
+		//NO copyable
+		SendBuffer(const SendBuffer&) = delete;
+		SendBuffer& operator=(SendBuffer const&) = delete;
 		
 		uint32_t ipAddr;
 		uint16_t port;
 		Packet   packet;
 	};
-	static size_t MaxSendingQueueSize;
+	static const size_t MaxSendingQueueSize;
+	static const size_t MaxMultipleSendingMessages;
+	static const size_t PacketPoolSize;
 private:
 	std::thread	thread;
-	State		state = State::Normal;
-	Listener*	listener = nullptr;
-	int		fd = 0;
-	int		pipe[2] = {};
-	pollfd		ufds[2] = {};
-	volatile bool	signaled = false;
-	volatile bool	running = false;
-	std::chrono::milliseconds now = 0ms;
+	State		state		= State::Normal;
+	Listener*	listener	= nullptr;
+	int		fd		= 0;
+	int		pipe[2]		= {FD_INVALID, FD_INVALID};
+	pollfd		ufds[2]		= {};
+	volatile bool	signaled	= false;
+	volatile bool	running		= false;
+	std::chrono::milliseconds now	= 0ms;
 	moodycamel::ConcurrentQueue<SendBuffer>	sending;
 	moodycamel::ConcurrentQueue<std::pair<std::promise<void>,std::function<void(std::chrono::milliseconds)>>>  tasks;
 	std::multimap<std::chrono::milliseconds,TimerImpl::shared> timers;
+	ObjectPool<Packet> packetPool;
 	
 };
 

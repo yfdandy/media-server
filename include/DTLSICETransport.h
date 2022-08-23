@@ -51,7 +51,9 @@ public:
 	class Listener
 	{
 	public:
+		virtual void onICETimeout() = 0;
 		virtual void onDTLSStateChanged(const DTLSState) = 0;
+		virtual void onRemoteICECandidateActivated(const std::string& ip, uint16_t port, uint32_t priority) = 0;
 		virtual ~Listener() = default;
 	};
 	class Sender
@@ -61,7 +63,7 @@ public:
 	};
 
 public:
-	DTLSICETransport(Sender *sender,TimeService& timeService);
+	DTLSICETransport(Sender *sender,TimeService& timeService, ObjectPool<Packet>& packetPool);
 	virtual ~DTLSICETransport();
 	
 	void Start();
@@ -71,11 +73,14 @@ public:
 	void SetRemoteProperties(const Properties& properties);
 	void SetLocalProperties(const Properties& properties);
 	virtual int SendPLI(DWORD ssrc) override;
+	virtual int Reset(DWORD ssrc) override;
 	virtual int Enqueue(const RTPPacket::shared& packet) override;
 	virtual int Enqueue(const RTPPacket::shared& packet,std::function<RTPPacket::shared(const RTPPacket::shared&)> modifier) override;
-	int Dump(const char* filename, bool inbound = true, bool outbound = true, bool rtcp = true);
-	int Dump(UDPDumper* dumper, bool inbound = true, bool outbound = true, bool rtcp = true);
+	int Dump(const char* filename, bool inbound = true, bool outbound = true, bool rtcp = true, bool rtpHeadersOnly = false);
+	int Dump(UDPDumper* dumper, bool inbound = true, bool outbound = true, bool rtcp = true, bool rtpHeadersOnly = false);
+	int StopDump();
         int DumpBWEStats(const char* filename);
+	int StopDumpBWEStats();
 	void Reset();
 	
 	void ActivateRemoteCandidate(ICERemoteCandidate* candidate,bool useCandidate, DWORD priority);
@@ -89,9 +94,18 @@ public:
 	bool RemoveIncomingSourceGroup(RTPIncomingSourceGroup *group);
 	
 	void SetBandwidthProbing(bool probe);
-	void SetMaxProbingBitrate(DWORD bitrate)	{ this->maxProbingBitrate = bitrate;	}
+	void SetMaxProbingBitrate(DWORD bitrate);
+	void SetProbingBitrateLimit(DWORD bitrate);
+	void EnableSenderSideEstimation(bool enabled);
 	void SetSenderSideEstimatorListener(RemoteRateEstimator::Listener* listener) { senderSideBandwidthEstimator.SetListener(listener); }
+
+	uint32_t GetAvailableOutgoingBitrate() const	{ return senderSideBandwidthEstimator.GetAvailableBitrate(); }
+
+	void SetRemoteOverrideBWE(bool overrideBew);
+	void SetRemoteOverrideBitrate(DWORD bitrate);
+	void DisableREMB(bool disabled);
 	
+	ICERemoteCandidate* GetActiveRemoteCandidate() const { return active;	};
 	const char* GetRemoteUsername() const { return iceRemoteUsername;	};
 	const char* GetRemotePwd()	const { return iceRemotePwd;		};
 	const char* GetLocalUsername()	const { return iceLocalUsername;	};
@@ -111,10 +125,11 @@ public:
 
 private:
 	void SetState(DTLSState state);
-	void Probe();
+	void CheckProbeTimer();
+	void Probe(QWORD now);
 	int Send(RTPPacket::shared&& packet);
 	int Send(const RTCPCompoundPacket::shared& rtcp);
-	void SetRTT(DWORD rtt);
+	void SetRTT(DWORD rtt,QWORD now);
 	void onRTCP(const RTCPCompoundPacket::shared &rtcp);
 	void ReSendPacket(RTPOutgoingSourceGroup *group,WORD seq);
 	DWORD SendProbe(const RTPPacket::shared& packet);
@@ -145,6 +160,7 @@ private:
 private:
 	Sender*		sender = nullptr;
 	TimeService&	timeService;
+	ObjectPool<Packet>& packetPool;
 	datachannels::impl::Endpoint endpoint;
 	datachannels::Endpoint::Options dcOptions;
 	Listener*	listener = nullptr;
@@ -172,24 +188,36 @@ private:
 	char*	iceLocalUsername	= nullptr;
 	char*	iceLocalPwd		= nullptr;
 	
-	Acumulator incomingBitrate;
-	Acumulator outgoingBitrate;
-	Acumulator probingBitrate;
+	Acumulator<uint32_t, uint64_t> incomingBitrate;
+	Acumulator<uint32_t, uint64_t> outgoingBitrate;
+	Acumulator<uint32_t, uint64_t> rtxBitrate;
+	Acumulator<uint32_t, uint64_t> probingBitrate;
 	
 	std::map<DWORD,PacketStats::shared> transportWideReceivedPacketsStats;
 	
-	UDPDumper* dumper	= nullptr;
-	bool dumpInRTP		= false;
-	bool dumpOutRTP		= false;
-	bool dumpRTCP		= false;
-	volatile bool probe	= false;
-	DWORD maxProbingBitrate = 1024*1000;
-	
+	UDPDumper* dumper			= nullptr;
+	volatile bool dumpInRTP			= false;
+	volatile bool dumpOutRTP		= false;
+	volatile bool dumpRTCP			= false;
+	volatile bool dumpRTPHeadersOnly	= false;
+	volatile bool probe			= false;
+	DWORD maxProbingBitrate			= 1024*1000;
+	DWORD probingBitrateLimit		= maxProbingBitrate *4;
+	volatile bool senderSideEstimationEnabled = true;
+
 	Timer::shared probingTimer;
 	QWORD   lastProbe = 0;
 	QWORD 	initTime = 0;
+	volatile bool started = false;
 	
 	SendSideBandwidthEstimation senderSideBandwidthEstimator;
+	Timer::shared sseTimer;
+
+	bool overrideBWE = false;
+	bool disableREMB = false;
+	uint32_t remoteOverrideBitrate = 0;
+
+	Timer::shared iceTimeoutTimer;
 };
 
 

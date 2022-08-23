@@ -90,7 +90,7 @@ void * AudioEncoderWorker::startEncoding(void *par)
 	Log("Encoding audio [%p]\n",pthread_self());
 	conf->Encode();
 	//Exit
-	return NULL;;
+	return NULL;
 }
 
 
@@ -165,7 +165,7 @@ int AudioEncoderWorker::Encode()
 {
 	SWORD 		recBuffer[2048];
 	AudioEncoder* 	codec;
-	DWORD		frameTime=0;
+	QWORD		frameTime=0;
 
 	Log(">Encode Audio\n");
 
@@ -174,11 +174,18 @@ int AudioEncoderWorker::Encode()
 		return Error("Could not open encoder");
 
 	//Try to set native rate
-	DWORD rate = codec->TrySetRate(audioInput->GetNativeRate());
+	DWORD numChannels = audioInput->GetNumChannels();
+	DWORD rate = audioInput->GetNativeRate();
+	
+	//Update codec
+	rate = codec->TrySetRate(rate, numChannels);
 	
 	//Create audio frame
 	AudioFrame frame(audioCodec);
 	
+	//Disable shared buffer on clone
+	frame.DisableSharedBuffer();
+
 	//Set rate
 	frame.SetClockRate(rate);
 
@@ -196,6 +203,15 @@ int AudioEncoderWorker::Encode()
 		//Incrementamos el tiempo de envio
 		frameTime += codec->numFrameSamples;
 
+		//If we have a different channel count
+		if (numChannels != audioInput->GetNumChannels())
+		{
+			//Update channel count
+			numChannels = audioInput->GetNumChannels();
+			//Set new channel count on codec
+			codec->TrySetRate(rate, numChannels);
+		}
+
 		//Check codec
 		if (codec)
 		{
@@ -212,11 +228,14 @@ int AudioEncoderWorker::Encode()
 			//Set frame length
 			frame.SetLength(len);
 
-			//Set frame time
-			frame.SetTimestamp(frameTime*1000/codec->GetClockRate());
-
+			//Set frame timestamp
+			frame.SetTimestamp(frameTime);
+			//Set time
+			frame.SetTime(frameTime*1000/codec->GetClockRate());
 			//Set frame duration
-			frame.SetDuration(codec->numFrameSamples*1000/codec->GetClockRate());
+			frame.SetDuration(codec->numFrameSamples);
+			//Set number of channels
+			frame.SetNumChannels(numChannels);
 
 			//Clear rtp
 			frame.ClearRTPPacketizationInfo();

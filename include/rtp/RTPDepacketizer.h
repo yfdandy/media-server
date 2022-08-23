@@ -63,12 +63,16 @@ public:
 
 	virtual MediaFrame* AddPacket(const RTPPacket::shared& packet)
 	{
-		//Check it is from same packet
-		if (frame.GetTimeStamp()!=packet->GetTimestamp())
-			//Reset frame
-			ResetFrame();
+		//Reset frame
+		ResetFrame();
 		//Set timestamp
-		frame.SetTimestamp(packet->GetTimestamp());
+		frame.SetTimestamp(packet->GetExtTimestamp());
+		//Set clock rate
+		frame.SetClockRate(packet->GetClockRate());
+		//Set time
+		frame.SetTime(packet->GetTime());
+		//Set sender time
+		frame.SetSenderTime(packet->GetSenderTime());
 		//Set SSRC
 		frame.SetSSRC(packet->GetSSRC());
 		//Add payload
@@ -90,11 +94,7 @@ public:
 		//Reset frame data
 		frame.Reset();
 	}
-	
-	virtual DWORD GetTimestamp() 
-	{
-		return frame.GetTimeStamp();
-	}
+
 private:
 	AudioFrame frame;
 };

@@ -1,3 +1,5 @@
+#include "tracing.h"
+
 #include "rtp/RTPIncomingMediaStreamMultiplexer.h"
 
 	
@@ -8,29 +10,39 @@ RTPIncomingMediaStreamMultiplexer::RTPIncomingMediaStreamMultiplexer(DWORD ssrc,
 	this->ssrc = ssrc;
 }
 
+void RTPIncomingMediaStreamMultiplexer::Stop()
+{
+	//Wait until all the previous async have finished as async calls are executed in order
+	timeService.Async([=](auto now){}).wait();
+}
 
 void RTPIncomingMediaStreamMultiplexer::AddListener(RTPIncomingMediaStream::Listener* listener) 
 {
 	Debug("-RTPIncomingMediaStreamMultiplexer::AddListener() [listener:%p,this:%p]\n",listener,this);
-		
-	ScopedLock scoped(listenerMutex);
-	listeners.insert(listener);
+	
+	//Dispatch in thread sync
+	timeService.Sync([=](auto now){
+		listeners.insert(listener);
+	});
 }
 
 void RTPIncomingMediaStreamMultiplexer::RemoveListener(RTPIncomingMediaStream::Listener* listener) 
 {
-	Debug("-RTPIncomingMediaStreamMultiplexer::RemoveListener() [listener:%p]\n",listener);
+	Debug("-RTPIncomingMediaStreamMultiplexer::RemoveListener() [listener:%p,this:%p]\n", listener, this);
 		
-	ScopedLock scoped(listenerMutex);
-	listeners.erase(listener);
+	//Dispatch in thread sync
+	timeService.Sync([=](auto now){
+		listeners.erase(listener);
+	});
 }
 
 void RTPIncomingMediaStreamMultiplexer::onRTP(RTPIncomingMediaStream* stream,const RTPPacket::shared& packet)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onRTP", "ssrc", stream->GetMediaSSRC());
+
 	//Dispatch in thread async
-	timeService.Async([=](...){
-		//Block listeners
-		ScopedLock scoped(listenerMutex);
+	timeService.Async([=](auto now){
 		//Deliver to all listeners
 		for (auto listener : listeners)
 			//Dispatch rtp packet
@@ -40,26 +52,32 @@ void RTPIncomingMediaStreamMultiplexer::onRTP(RTPIncomingMediaStream* stream,con
 
 void RTPIncomingMediaStreamMultiplexer::onRTP(RTPIncomingMediaStream* stream,const std::vector<RTPPacket::shared>& packets)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onRTP", "ssrc", stream->GetMediaSSRC(), "packets", packets.size());
+
 	//Dispatch in thread async
-	timeService.Async([=](...){
-		//Block listeners
-		ScopedLock scoped(listenerMutex);
+	timeService.Async([=,ssrc = stream->GetMediaSSRC()](auto now){
+		//Trace method
+		TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onRTP async", "ssrc", ssrc, "packets", packets.size());
 		//For each packet
-		for (const auto packet : packets)
+		for (const auto& packet : packets)
 			//Deliver to all listeners
 			for (auto listener : listeners)
 				//Dispatch rtp packet
-				listener->onRTP(stream,packet);
+				listener->onRTP(this,packet);
 	});
 }
 
 
 void RTPIncomingMediaStreamMultiplexer::onBye(RTPIncomingMediaStream* stream)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onBye", "ssrc", stream->GetMediaSSRC());
+
 	//Dispatch in thread async
-	timeService.Async([=](...){
-		//Block listeners
-		ScopedLock scoped(listenerMutex);
+	timeService.Async([=, ssrc = stream->GetMediaSSRC()](auto now){
+		//Trace method
+		TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onBye async", "ssrc", ssrc);
 		//Deliver to all listeners
 		for (auto listener : listeners)
 			//Dispatch rtp packet
@@ -70,10 +88,13 @@ void RTPIncomingMediaStreamMultiplexer::onBye(RTPIncomingMediaStream* stream)
 
 void RTPIncomingMediaStreamMultiplexer::onEnded(RTPIncomingMediaStream* stream)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onEnded", "ssrc", stream->GetMediaSSRC());
+
 	//Dispatch in thread async
-	timeService.Async([=](...){
-		//Block listeners
-		ScopedLock scoped(listenerMutex);
+	timeService.Async([=](auto now){
+		//Trace method
+		TRACE_EVENT("rtp", "RTPIncomingMediaStreamMultiplexer::onEnded async", "ssrc", ssrc);
 		//Deliver to all listeners
 		for (auto listener : listeners)
 			//Dispatch rtp packet

@@ -13,9 +13,13 @@
 
 #ifndef RTPHEADEREXTENSION_H
 #define RTPHEADEREXTENSION_H
+#include <optional>
+#include <cmath>
+
 #include "config.h"
 #include "tools.h"
 #include "rtp/RTPMap.h"
+#include "rtp/DependencyDescriptor.h"
 
 class RTPHeaderExtension
 {
@@ -31,6 +35,9 @@ public:
 		RTPStreamId		= 7,
 		RepairedRTPStreamId	= 8,
 		MediaStreamId		= 9,
+		DependencyDescriptor	= 10,
+		AbsoluteCaptureTime	= 11,
+		Reserved		= 15
 	};
 	
 	static Type GetExtensionForName(const char* ext)
@@ -41,10 +48,12 @@ public:
 		else if (strcasecmp(ext,"urn:3gpp:video-orientation")==0)							return CoordinationOfVideoOrientation;
 		else if (strcasecmp(ext,"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01")==0)	return TransportWideCC;
 		else if (strcasecmp(ext,"urn:ietf:params:rtp-hdrext:framemarking")==0)						return FrameMarking;
-		else if (strcasecmp(ext,"http://tools.ietf.org/html/draft-ietf-avtext-framemarking-07")==0)						return FrameMarking;
+		else if (strcasecmp(ext,"http://tools.ietf.org/html/draft-ietf-avtext-framemarking-07")==0)			return FrameMarking;
 		else if (strcasecmp(ext,"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")==0)					return RTPStreamId;
 		else if (strcasecmp(ext,"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id")==0)				return RepairedRTPStreamId;
 		else if (strcasecmp(ext,"urn:ietf:params:rtp-hdrext:sdes:mid")==0)						return MediaStreamId;
+		else if (strcasecmp(ext,"https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension")==0) return DependencyDescriptor;
+		else if (strcasecmp(ext,"http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time") == 0)			return AbsoluteCaptureTime;
 		return UNKNOWN;
 	}
 
@@ -59,23 +68,14 @@ public:
 			case TransportWideCC:			return "TransportWideCC";
 			case FrameMarking:			return "FrameMarking";
 			case RTPStreamId:			return "RTPStreamId";
+			case RepairedRTPStreamId:		return "RepairedRTPStreamId";
+			case MediaStreamId:			return "MediaStreamId";
+			case DependencyDescriptor:		return "DependencyDescriptor";
+			case AbsoluteCaptureTime:		return "AbsoluteCaptureTime";
 			default:				return "unknown";
 		}
 	}
 	
-	struct VideoOrientation
-	{
-		bool facing;
-		bool flip;
-		BYTE rotation;
-		
-		VideoOrientation()
-		{
-			facing		= 0;
-			flip		= 0;
-			rotation	= 0;
-		}
-	};
 	
 	// For Frame Marking RTP Header Extension:
 	// https://tools.ietf.org/html/draft-ietf-avtext-framemarking-04#page-4
@@ -107,71 +107,77 @@ public:
 	//      this indicates a dependency on the given index.  If no scalability
 	//      is used, this MUST be 0 or omitted.  When omitted, LID MUST also
 	//      be omitted.
-	struct FrameMarks {
-		bool startOfFrame;
-		bool endOfFrame;
-		bool independent;
-		bool discardable;
-		bool baseLayerSync;
-		BYTE temporalLayerId;
-		BYTE layerId;
-		BYTE tl0PicIdx;
-	  
-		FrameMarks()
+	struct FrameMarks 
+	{
+		bool startOfFrame	= false;
+		bool endOfFrame		= false;
+		bool independent	= false;
+		bool discardable	= false;
+		bool baseLayerSync	= false;
+		BYTE temporalLayerId	= 0;
+		BYTE layerId		= 0;
+		BYTE tl0PicIdx		= 0;
+	};
+
+	struct AbsoluteCaptureTime
+	{
+		uint64_t absoluteCatpureTimestampNTP	= 0;
+		int64_t  estimatedCaptureClockOffsetNTP	= 0;
+
+		uint64_t GetAbsoluteCaptureTimestamp() const
 		{
-			startOfFrame = false;
-			endOfFrame = false;
-			independent = false;
-			discardable = false;
-			baseLayerSync = false;
-			temporalLayerId = 0;
-			layerId = 0;
-			tl0PicIdx = 0;
+			return (absoluteCatpureTimestampNTP + estimatedCaptureClockOffsetNTP) * (1000.0 / 0x100000000);
+		}
+
+		uint64_t GetAbsoluteCaptureTime() const
+		{
+			return absoluteCatpureTimestampNTP ? GetAbsoluteCaptureTimestamp() - 2208988800000ULL : 0;
+		}
+
+		void SetAbsoluteCaptureTime(uint64_t ms)
+		{
+			SetAbsoluteCaptureTimestamp(ms + 2208988800000ULL);
+		}
+
+		void SetAbsoluteCaptureTimestamp(uint64_t ntp)
+		{
+			absoluteCatpureTimestampNTP = std::round(ntp * (0x100000000 / 1000.0));
+			estimatedCaptureClockOffsetNTP = 0;
+
 		}
 	};
 	
 public:
-	RTPHeaderExtension()
-	{
-		absSentTime = 0;
-		timeOffset = 0;
-		vad = 0;
-		level = 0;
-		transportSeqNum = 0;
-		hasAbsSentTime = 0;
-		hasTimeOffset =  0;
-		hasAudioLevel = 0;
-		hasVideoOrientation = 0;
-		hasTransportWideCC = 0;
-		hasFrameMarking = 0;
-		hasRId = 0;
-		hasRepairedId = 0;
-		hasMediaStreamId = 0;
-	}
-	
 	DWORD Parse(const RTPMap &extMap,const BYTE* data,const DWORD size);
+	bool  ParseDependencyDescriptor(const std::optional<TemplateDependencyStructure>& templateDependencyStructure);
 	DWORD Serialize(const RTPMap &extMap,BYTE* data,const DWORD size) const;
 	void  Dump() const;
 public:
-	QWORD	absSentTime;
-	int	timeOffset;
-	bool	vad;
-	BYTE	level;
-	WORD	transportSeqNum;
+	QWORD	absSentTime	= 0;
+	int	timeOffset	= 0;
+	bool	vad		= 0;
+	BYTE	level		= 0;
+	WORD	transportSeqNum	= 0;
 	VideoOrientation cvo;
 	FrameMarks frameMarks;
 	std::string rid;
 	std::string repairedId;
 	std::string mid;
-	bool    hasAbsSentTime;
-	bool	hasTimeOffset;
-	bool	hasAudioLevel;
-	bool	hasVideoOrientation;
-	bool	hasTransportWideCC;
-	bool	hasFrameMarking;
-	bool	hasRId;
-	bool	hasRepairedId;
-	bool	hasMediaStreamId;
+	BitReader dependencyDescryptorReader; 
+	std::optional<::DependencyDescriptor> dependencyDescryptor;
+	struct AbsoluteCaptureTime absoluteCaptureTime;
+	
+	bool	hasAbsSentTime		= false;
+	bool	hasTimeOffset		= false;
+	bool	hasAudioLevel		= false;
+	bool	hasVideoOrientation	= false;
+	bool	hasTransportWideCC	= false;
+	bool	hasFrameMarking		= false;
+	bool	hasRId			= false;
+	bool	hasRepairedId		= false;
+	bool	hasMediaStreamId	= false;
+	bool	hasDependencyDescriptor	= false;
+	bool	hasAbsoluteCaptureTime	= false;
 };
 
 #endif /* RTPHEADEREXTENSION_H */

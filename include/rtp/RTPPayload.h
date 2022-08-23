@@ -11,8 +11,9 @@ public:
 public:
 	RTPPayload();
 	
-	RTPPayload::shared Clone();
+	void Reset();
 	bool SetPayload(const BYTE *data,DWORD size);
+	bool SetPayload(const RTPPayload& other);
 	bool SkipPayload(DWORD skip);
 	bool PrefixPayload(BYTE *data,DWORD size);
 	
@@ -21,7 +22,6 @@ public:
 	DWORD GetMediaLength()		const	{ return payloadLen;		}
 	DWORD GetMaxMediaLength()	const	{ return SIZE;			}
 	
-	BYTE* GetPayloadData()			{ return payload;		}
 	void SetMediaLength(DWORD len)		{ this->payloadLen = len;	}
 private:
 	static const DWORD SIZE = 1700;

@@ -1,7 +1,7 @@
+#include "tracing.h"
+
 #include "rtp/RTPIncomingSourceGroup.h"
-
 #include <math.h>
-
 #include "VideoLayerSelector.h"
 #include "remoterateestimator.h"
 
@@ -9,16 +9,22 @@ using namespace std::chrono_literals;
 
 RTPIncomingSourceGroup::RTPIncomingSourceGroup(MediaFrame::Type type,TimeService& timeService) :
 	timeService(timeService),
-	losts(256)
+	losts(1024)
 {
 	//Store type
 	this->type = type;
-	//Small initial bufer of 100ms
-	packets.SetMaxWaitTime(100);
+	//Small initial bufer of 1000s
+	packets.SetMaxWaitTime(1000);
 	//LIsten remote rate events
 	remoteRateEstimator.SetListener(this);
-	//Create dispatch timer
-	dispatchTimer = timeService.CreateTimer([this](auto now){ DispatchPackets(now.count()); });
+}
+
+RTPIncomingSourceGroup::~RTPIncomingSourceGroup()
+{
+	//If not stoped
+	if (dispatchTimer)
+		//Stop
+		Stop();
 }
 
 RTPIncomingSource* RTPIncomingSourceGroup::GetSource(DWORD ssrc)
@@ -27,31 +33,36 @@ RTPIncomingSource* RTPIncomingSourceGroup::GetSource(DWORD ssrc)
 		return &media;
 	else if (ssrc == rtx.ssrc)
 		return &rtx;
-	else if (ssrc == fec.ssrc)
-		return &fec;
 	return NULL;
 }
 
 void RTPIncomingSourceGroup::AddListener(RTPIncomingMediaStream::Listener* listener) 
 {
 	Debug("-RTPIncomingSourceGroup::AddListener() [listener:%p]\n",listener);
-		
-	ScopedLock scoped(listenerMutex);
-	listeners.insert(listener);
+	
+	//Add it sync
+	timeService.Sync([=](auto){
+		listeners.insert(listener);
+	});
 }
 
 void RTPIncomingSourceGroup::RemoveListener(RTPIncomingMediaStream::Listener* listener) 
 {
 	Debug("-RTPIncomingSourceGroup::RemoveListener() [listener:%p]\n",listener);
-		
-	ScopedLock scoped(listenerMutex);
-	listeners.erase(listener);
+	
+	//Remove it sync
+	timeService.Sync([=](auto) {
+		listeners.erase(listener);
+	});
 }
 
-int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD size)
+int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD size, QWORD now)
 {
-	
-	//UltraDebug(">RTPIncomingSourceGroup::AddPacket()\n");
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::AddPacket");
+
+
+	//UltraDebug(">RTPIncomingSourceGroup::AddPacket() | [now:%lld]\n",now);
 	
 	//Check if it is the rtx packet used to calculate rtt
 	if (rttrtxTime && packet->GetSeqNum()==rttrtxSeq)
@@ -61,7 +72,7 @@ int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD siz
 		//Calculate rtt
 		const auto rtt = time - rttrtxTime;
 		//Set RTT
-		SetRTT(rtt);
+		SetRTT(rtt,now);
 		//Done
 		return 0;
 	}
@@ -74,13 +85,12 @@ int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD siz
 	//Add to lost packets
 	auto lost = losts.AddPacket(packet);
 	
-	//Get now
-	auto now = getTimeMS();
+	//Update instant lost accumulator
+	if (lost) media.AddLostPackets(now, lost);
 	
 	//If doing remb
 	if (remb)
 	{
-		
 		//Add estimation
 		remoteRateEstimator.Update(media.ssrc,packet,size);
 		//Update lost
@@ -92,16 +102,32 @@ int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD siz
 		//Rejected packet
 		return -1;
 	
+	//Check if we have receiver already an SR for media stream
+	if (media.lastReceivedSenderReport)
+	{
+		//Get ntp and rtp timestamps
+		QWORD timestamp = media.lastReceivedSenderRTPTimestampExtender.GetExtSeqNum();
+		//Get ts delta		
+		int64_t delta = (int64_t)packet->GetExtTimestamp() - timestamp;
+		//Calculate sender time 
+		QWORD senderTime = media.lastReceivedSenderTime + (delta) * 1000 / packet->GetClockRate();
+		//Set calculated sender time
+		packet->SetSenderTime(senderTime);
+	}
+
 	//Get next time for dispatcht
 	uint64_t next = packets.GetWaitTime(now);
 	
 	//UltraDebug("-RTPIncomingSourceGroup::AddPacket() | [lost:%d,next:%llu]\n",lost,next);
 	
 	//If we have anything on the queue
-	if (next!=(QWORD)-1)
+	if (next!=(QWORD)-1 && dispatchTimer)
 		//Reschedule timer
 		dispatchTimer->Again(std::chrono::milliseconds(next));
 	
+	//Set last updated time
+	lastUpdated = now;
+
 	//Return lost packets
 	return lost;
 }
@@ -110,25 +136,19 @@ void RTPIncomingSourceGroup::Bye(DWORD ssrc)
 {
 	if (ssrc == media.ssrc)
 	{
-		//Reset source
-		media.Reset();
 		//REset packets
 		ResetPackets();
 		//Reset 
 		{
-			//Block listeners
-			ScopedLock scoped(listenerMutex);
-			//Deliver to all listeners
-			for (auto listener : listeners)
-				//Dispatch rtp packet
-				listener->onBye(this);
+			//Add it sync
+			timeService.Sync([=](auto) {
+				//Deliver to all listeners
+				for (auto listener : listeners)
+					//Dispatch rtp packet
+					listener->onBye(this);
+			});
 		}
 	} else if (ssrc == rtx.ssrc) {
-		//Reset source
-		rtx.Reset();
-	} else if (ssrc == fec.ssrc) {
-		//Reset source
-		fec.Reset();
 	}
 }
 
@@ -137,61 +157,64 @@ void RTPIncomingSourceGroup::ResetPackets()
 	//Reset packet queue and lost count
 	packets.Reset();
 	losts.Reset();
-	//Reset stats
-	lost = 0;
-	minWaitedTime = 0;
-	maxWaitedTime = 0;
-	avgWaitedTime = 0;
 }
 
 void RTPIncomingSourceGroup::Update()
 {
-	Update(getTimeMS());
-}
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::Update");
 
-void RTPIncomingSourceGroup::Update(QWORD now)
+	//Update it sync
+	timeService.Sync([=](std::chrono::milliseconds now) {
+		//Set last updated time
+		lastUpdated = now.count();
+		//Update
+		media.Update(now.count());
+		//Update
+		rtx.Update(now.count());
+	});
+}
+void RTPIncomingSourceGroup::SetMaxWaitTime(DWORD maxWaitingTime)
 {
-	//Update media
-	{
-		//Lock source
-		ScopedLock scoped(media);
-		//Update bitrate accumulator
-		media.acumulator.Update(now);
-		//Update also all media layers
-		for (auto& entry : media.layers)
-			//Update bitrate also
-			entry.second.acumulator.Update(now);
-	}
-	
-	//Update RTX
-	{
-		//Lock source
-		ScopedLock scoped(rtx);
-		//Update bitrate accumulator
-		rtx.acumulator.Update(now);
-	}
-	
-	//Update FEC
-	{
-		//Lock source
-		ScopedLock scoped(fec);
-		//Update bitrate accumulator
-		fec.acumulator.Update(now);
-	}
+	//Update it sync
+	timeService.Sync([=](std::chrono::milliseconds now) {
+		//Set it
+		packets.SetMaxWaitTime(maxWaitingTime);
+		//Store overriden value
+		this->maxWaitingTime = maxWaitingTime;
+	});
 }
 
-void RTPIncomingSourceGroup::SetRTT(DWORD rtt)
+void RTPIncomingSourceGroup::ResetMaxWaitTime()
+{
+	//Update it sync
+	timeService.Sync([=](std::chrono::milliseconds now) {
+		//Remove override
+		maxWaitingTime.reset();
+	});
+}
+
+void RTPIncomingSourceGroup::SetRTT(DWORD rtt, QWORD now)
 {
 	//Store rtt
 	this->rtt = rtt;
-	//Set max packet wait time
-	packets.SetMaxWaitTime(fmin(500,fmax(120,rtt*4)+40));
+	//If the max wait time is not overriden
+	if (!maxWaitingTime.has_value())
+	{
+		//if se suport rtx
+		if (isRTXEnabled)
+			//Set max packet wait time
+			packets.SetMaxWaitTime(fmin(750,fmax(200,rtt)*3));
+		else
+			//No wait
+			packets.SetMaxWaitTime(0);
+	}
 	//Dispatch packets with new timer now
-	dispatchTimer->Again(0ms);
+	if (dispatchTimer) dispatchTimer->Again(0ms);
 	//If using remote rate estimator
 	if (remb)
 		//Add estimation
-		remoteRateEstimator.UpdateRTT(media.ssrc,rtt,getTimeMS());
+		remoteRateEstimator.UpdateRTT(media.ssrc,rtt,now);
 }
 
 WORD RTPIncomingSourceGroup::SetRTTRTX(uint64_t time)
@@ -208,6 +231,11 @@ WORD RTPIncomingSourceGroup::SetRTTRTX(uint64_t time)
 void RTPIncomingSourceGroup::Start(bool remb)
 {
 	Debug("-RTPIncomingSourceGroup::Start() | [remb:%d]\n",remb);
+
+	//Create dispatch timer
+	dispatchTimer = timeService.CreateTimer([this](auto now) { DispatchPackets(now.count()); });
+	//Set name for debug
+	dispatchTimer->SetName("RTPIncomingSourceGroup - dispatch");
 	
 	//are we using remb?
 	this->remb = remb;
@@ -218,11 +246,19 @@ void RTPIncomingSourceGroup::Start(bool remb)
 
 void RTPIncomingSourceGroup::DispatchPackets(uint64_t time)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::DispatchPackets",
+		"queued", packets.Length(),
+		"next", packets.GetNextPacketSeqNumber(),
+		"discarded", packets.GetNumDiscardedPackets(),
+		"listeners", listeners.size()
+	);
+
 	//UltraDebug("-RTPIncomingSourceGroup::DispatchPackets() | [time:%llu]\n",time);
 	
 	//Deliver all pending packets at once
 	std::vector<RTPPacket::shared> ordered;
-	for (auto packet = packets.GetOrdered(getTimeMS()); packet; packet = packets.GetOrdered(getTimeMS()))
+	for (auto packet = packets.GetOrdered(time); packet; packet = packets.GetOrdered(time))
 	{
 		//We need to adjust the seq num due the in band probing packets
 		packet->SetExtSeqNum(packet->GetExtSeqNum() - packets.GetNumDiscardedPackets());
@@ -230,43 +266,61 @@ void RTPIncomingSourceGroup::DispatchPackets(uint64_t time)
 		ordered.push_back(packet);
 	}
 	
-	{
-		//Block listeners
-		ScopedLock scoped(listenerMutex);
+	//If we have any rtp packets
+	if (ordered.size())
 		//Deliver to all listeners
 		for (auto listener : listeners)
 			//Dispatch rtp packet
 			listener->onRTP(this,ordered);
-	}
+
 	//Update stats
-	lost          = losts.GetTotal();
-	minWaitedTime = packets.GetMinWaitedime();
-	maxWaitedTime = packets.GetMaxWaitedTime();
-	avgWaitedTime = packets.GetAvgWaitedTime();
+	lost		= losts.GetTotal();
+	avgWaitedTime	= packets.GetAvgWaitedTime();
+	//Get min max values
+	auto minmax	= packets.GetMinMaxWaitedTime();
+	minWaitedTime	= minmax.first;
+	maxWaitedTime	= minmax.second;
+
+	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::DispatchedPackets",
+		"queued", packets.Length(),
+		"next", packets.GetNextPacketSeqNumber(),
+		"discarded", packets.GetNumDiscardedPackets(),
+		"lost", losts.GetTotal(),
+		"dispatched", ordered.size(),
+		"listeners", listeners.size()
+	);
+
 }
 
 void RTPIncomingSourceGroup::Stop()
 {
+
+	Debug("-RTPIncomingSourceGroup::Stop()\r\n");
+
 	//Stop timer
-	dispatchTimer->Cancel();
-	
-	ScopedLock scoped(listenerMutex);
-	
-	//Deliver to all listeners
-	for (auto listener : listeners)
-		//Dispatch rtp packet
-		listener->onEnded(this);
-	//Clear listeners
-	listeners.clear();
+	if (dispatchTimer) dispatchTimer->Cancel();
+
+	//Stop listeners sync
+	timeService.Sync([=](auto) {
+		//Deliver to all listeners
+		for (auto listener : listeners)
+			//Dispatch rtp packet
+			listener->onEnded(this);
+		//Clear listeners
+		listeners.clear();
+	});
+
+	//No timer
+	dispatchTimer = nullptr;
 }
 
 RTPIncomingSource* RTPIncomingSourceGroup::Process(RTPPacket::shared &packet)
 {
+	//Trace method
+	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::Process");
+
 	//Get packet time
 	uint64_t time = packet->GetTime();
-	
-	//Update instant bitrates
-	Update(time);
 	
 	//Get ssrc
 	uint32_t ssrc = packet->GetSSRC();
@@ -279,29 +333,41 @@ RTPIncomingSource* RTPIncomingSourceGroup::Process(RTPPacket::shared &packet)
 		//error
 		return nullptr;
 
+	//Set extendedd  timestamp
+	packet->SetTimestampCycles(source->ExtendTimestamp(packet->GetTimestamp()));
+	//Set cycles back
+	packet->SetSeqCycles(source->ExtendSeqNum(packet->GetSeqNum()));
+	
+	//Parse dependency structure now
+	if (packet->ParseDependencyDescriptor(templateDependencyStructure,activeDecodeTargets))
+	{
+		//If it has a new dependency structure
+		if (packet->HasTemplateDependencyStructure())
+		{
+			//Store it
+			templateDependencyStructure = packet->GetTemplateDependencyStructure();
+			activeDecodeTargets = packet->GetActiveDecodeTargets();
+		}
+	}
+	
+	//Set clockrate
+	source->clockrate = packet->GetClockRate();
+
 	//if it is video
 	if (type == MediaFrame::Video)
 	{
 		//Check if we can ge the layer info
 		auto info = VideoLayerSelector::GetLayerIds(packet);
 		//UltraDebug("-VideoLayerSelector::GetLayerIds() | [id:%x,tid:%u,sid:%u]\n",info.GetId(),info.temporalLayerId,info.spatialLayerId);
-		//Lock sources accumulators
-		ScopedLock scoped(*source);
 		//Update source and layer info
-		source->Update(time, packet->GetSeqNum(), packet->GetRTPHeader().GetSize() + packet->GetMediaLength(), info);
+		source->Update(time, packet->GetSeqNum(), packet->GetRTPHeader().GetSize() + packet->GetMediaLength(), info, VideoLayerSelector::AreLayersInfoeAggregated(packet));
 	} else {
-		//Lock sources accumulators
-		ScopedLock scoped(*source);
 		//Update source and layer info
 		source->Update(time, packet->GetSeqNum(), packet->GetRTPHeader().GetSize() + packet->GetMediaLength());
 	}
 	
-	//Update source sequence number and get cycles
-	WORD cycles = source->SetSeqNum(packet->GetSeqNum());
-
-	//Set cycles back
-	packet->SetSeqCycles(cycles);
-	
+	if (source==&media)
+		source->SetLastTimestamp(time, packet->GetExtTimestamp(), packet->GetAbsoluteCaptureTime());
 	//Done
 	return source;
 }
@@ -312,4 +378,15 @@ void RTPIncomingSourceGroup::onTargetBitrateRequested(DWORD bitrate)
 	UltraDebug("-RTPIncomingSourceGroup::onTargetBitrateRequested() | [bitrate:%d]\n",bitrate);
 	//store estimation
 	remoteBitrateEstimation = bitrate;
+}
+
+void RTPIncomingSourceGroup::SetRTXEnabled(bool enabled)
+{
+	UltraDebug("-RTPIncomingSourceGroup::SetRTXEnabled() | [enabled:%d]\n", enabled);
+	//store estimation
+	isRTXEnabled = enabled;
+	//if rtx is not supported
+	if (!isRTXEnabled)
+		//No wait
+		packets.SetMaxWaitTime(0);
 }

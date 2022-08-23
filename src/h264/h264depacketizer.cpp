@@ -20,7 +20,6 @@ H264Depacketizer::H264Depacketizer() : RTPDepacketizer(MediaFrame::Video,VideoCo
 
 H264Depacketizer::~H264Depacketizer()
 {
-
 }
 
 void H264Depacketizer::ResetFrame()
@@ -30,18 +29,31 @@ void H264Depacketizer::ResetFrame()
 	//Clear config
 	config.ClearSequenceParameterSets();
 	config.ClearPictureParameterSets();
+	//No fragments
+	iniFragNALU = 0;
+	startedFrag = false;
 }
 
 MediaFrame* H264Depacketizer::AddPacket(const RTPPacket::shared& packet)
 {
 	//Get timestamp in ms
-	auto ts = packet->GetTimestamp();
+	auto ts = packet->GetExtTimestamp();
 	//Check it is from same packet
 	if (frame.GetTimeStamp()!=ts)
 		//Reset frame
 		ResetFrame();
-	//Set timestamp
-	frame.SetTimestamp(ts);
+	//If not timestamp
+	if (frame.GetTimeStamp()==(DWORD)-1)
+	{
+		//Set timestamp
+		frame.SetTimestamp(ts);
+		//Set clock rate
+		frame.SetClockRate(packet->GetClockRate());
+		//Set time
+		frame.SetTime(packet->GetTime());
+		//Set sender time
+		frame.SetSenderTime(packet->GetSenderTime());
+	}
 	//Set SSRC
 	frame.SetSSRC(packet->GetSSRC());
 	//Add payload
@@ -49,16 +61,10 @@ MediaFrame* H264Depacketizer::AddPacket(const RTPPacket::shared& packet)
 	//If it is last return frame
 	if (!packet->GetMark())
 		return NULL;
-	//Get config size
-	auto size = config.GetSize();
-	//Serialize codec config
-	BYTE* data = (BYTE*)malloc(size);
+	//Set config size
+	frame.AllocateCodecConfig(config.GetSize());
 	//Serialize
-	DWORD len = config.Serialize(data,size);
-	//Set it
-	frame.SetCodecConfig(data,len);
-	//Free config
-	free(data);
+	config.Serialize(frame.GetCodecConfigData(),frame.GetCodecConfigSize());
 	//Return frame
 	return &frame;
 }
@@ -91,7 +97,7 @@ MediaFrame* H264Depacketizer::AddPayload(const BYTE* payload, DWORD payloadLen)
 	//Get nalu size
 	DWORD nalSize = payloadLen;
 
-	//Debug("-H264 [NAL:%d,type:%d]\n", payload[0], nalUnitType);
+	Debug("-H264 [NAL:%d,type:%d,size:%d]\n", payload[0], nalUnitType, nalSize);
 
 	//Check type
 	switch (nalUnitType)
@@ -142,7 +148,7 @@ MediaFrame* H264Depacketizer::AddPayload(const BYTE* payload, DWORD payloadLen)
 			while (payloadLen > 2)
 			{
 				/* Get NALU size */
-				nalSize = (payload[0] << 8) | payload[1];
+				nalSize = get2(payload,0);
 
 				/* strip NALU size */
 				payload += 2;
@@ -232,10 +238,11 @@ MediaFrame* H264Depacketizer::AddPayload(const BYTE* payload, DWORD payloadLen)
 			 */
 			S = (payload[1] & 0x80) == 0x80;
 			E = (payload[1] & 0x40) == 0x40;
-
+			
 			/* strip off FU indicator and FU header bytes */
 			nalSize = payloadLen-2;
 
+			//if it is the start fragment of the nal unit
 			if (S)
 			{
 				/* NAL unit starts here */
@@ -257,19 +264,34 @@ MediaFrame* H264Depacketizer::AddPayload(const BYTE* payload, DWORD payloadLen)
 				frame.AppendMedia(nalHeader, sizeof (nalHeader));
 				//Append NAL header
 				frame.AppendMedia(&fragNalHeader,1);
+				//We have a start frag
+				startedFrag = true;
 			}
+			
+			//If we didn't receive a start frag
+			if (!startedFrag)
+				//Ignore
+				return NULL;
 
 			//Append data and get current post
 			pos = frame.AppendMedia(payload+2,nalSize);
 			//Add rtp payload
 			frame.AddRtpPacket(pos,nalSize,payload,2);
 
+			//If it is the end fragment of the nal unit
 			if (E)
 			{
+				//Ensure it is valid
+				if (iniFragNALU+4>frame.GetLength())
+					//Error
+					return NULL;
 				//Get NAL size
 				DWORD nalSize = frame.GetLength()-iniFragNALU-4;
 				//Set it
 				set4(frame.GetData(),iniFragNALU,nalSize);
+				//Done with fragment
+				iniFragNALU = 0;
+				startedFrag = false;
 			}
 			//Done
 			break;
@@ -293,7 +315,7 @@ MediaFrame* H264Depacketizer::AddPayload(const BYTE* payload, DWORD payloadLen)
 					config.SetAVCProfileIndication(nalData[0]);
 					config.SetProfileCompatibility(nalData[1]);
 					config.SetAVCLevelIndication(nalData[2]);
-					config.SetNALUnitLength(sizeof(nalHeader));
+					config.SetNALUnitLength(sizeof(nalHeader)-1);
 					
 					//Add full nal to config
 					config.AddSequenceParameterSet(payload,nalSize);

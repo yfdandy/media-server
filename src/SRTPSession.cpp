@@ -1,4 +1,4 @@
-
+#include "tracing.h"
 #include "SRTPSession.h"
 #include <string.h>
 #include <algorithm>
@@ -135,7 +135,7 @@ void SRTPSession::RemoveStream(uint32_t ssrc)
 	if (!srtp)
 	{
 		//Just remove from pending
-		std::remove(pending.begin() ,pending.end(), ssrc);
+		pending.erase(std::remove(pending.begin(), pending.end(), ssrc), pending.end());
 		return;
 	}
 	
@@ -145,33 +145,37 @@ void SRTPSession::RemoveStream(uint32_t ssrc)
 	Log("-SRTPSession::RemoveStream() | [ssrc:%u,%s]\n",ssrc,GetLastError());
 }
 		
-size_t SRTPSession::ProtectRTP(const uint8_t* data, size_t size)
+size_t SRTPSession::ProtectRTP(uint8_t* data, size_t size)
 {
-	size_t len = size;
-	err = (Status)srtp_protect(srtp,(uint8_t*)data,(int*)&len);
-	return err==Status::OK ? len : 0;
+	TRACE_EVENT("srtp", "SRTPSession::ProtectRTP", "size", size);
+	int len = size;
+	err = (Status)srtp_protect(srtp,(uint8_t*)data,&len);
+	return err == Status::OK && len > 0 ? static_cast<size_t>(len) : 0;
 }
 
-size_t SRTPSession::ProtectRTCP(const uint8_t* data, size_t size)
+size_t SRTPSession::ProtectRTCP(uint8_t* data, size_t size)
 {
-	size_t len = size;
-	err = (Status)srtp_protect_rtcp(srtp,(uint8_t*)data,(int*)&len);
-	return err==Status::OK ? len : 0;
+	TRACE_EVENT("srtp", "SRTPSession::ProtectRTCP", "size", size);
+	int len = size;
+	err = (Status)srtp_protect_rtcp(srtp,(uint8_t*)data,&len);
+	return err==Status::OK && len>0 ? static_cast<size_t>(len) : 0;
 }
 
-size_t SRTPSession::UnprotectRTP(const uint8_t* data, size_t size)
+size_t SRTPSession::UnprotectRTP(uint8_t* data, size_t size)
 {
-	size_t len = size;
-	err = (Status)srtp_unprotect(srtp,(uint8_t*)data,(int*)&len);
-	return err==Status::OK ? len : 0;
+	TRACE_EVENT("srtp", "SRTPSession::UnprotectRTP", "size", size);
+	int len = size;
+	err = (Status)srtp_unprotect(srtp,(uint8_t*)data,&len);
+	return err==Status::OK && len>0 ? len : 0;
 }
 
 
-size_t SRTPSession::UnprotectRTCP(const uint8_t* data, size_t size)
+size_t SRTPSession::UnprotectRTCP(uint8_t* data, size_t size)
 {
-	size_t len = size;
-	err = (Status)srtp_unprotect_rtcp(srtp,(uint8_t*)data,(int*)&len);
-	return err==Status::OK ? len : 0;
+	TRACE_EVENT("srtp", "SRTPSession::UnprotectRTCP", "size", size);
+	int len = size;
+	err = (Status)srtp_unprotect_rtcp(srtp,(uint8_t*)data,&len);
+	return err == Status::OK && len > 0 ? static_cast<size_t>(len) : 0;
 }
 
 

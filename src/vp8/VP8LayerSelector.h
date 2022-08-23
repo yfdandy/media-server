@@ -31,8 +31,9 @@ public:
 	BYTE GetTemporalLayer()		const override { return temporalLayerId;	}
 	BYTE GetSpatialLayer()		const override { return LayerInfo::MaxLayerId;	}
 	VideoCodec::Type GetCodec()	const override { return VideoCodec::VP8;	}
+	bool IsWaitingForIntra()	const override { return waitingForIntra;	}
 	
-	static LayerInfo GetLayerIds(const RTPPacket::shared& packet);
+	static std::vector<LayerInfo> GetLayerIds(const RTPPacket::shared& packet);
 	
 private:
 	bool waitingForIntra;

@@ -10,7 +10,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavresample/avresample.h>
+#include <libswresample/swresample.h>
 #include <libavutil/opt.h>
 }
 #include "config.h"
@@ -23,13 +23,13 @@ public:
 	AACEncoder(const Properties &properties);
 	virtual ~AACEncoder();
 	virtual int Encode(SWORD *in,int inLen,BYTE* out,int outLen);
-	virtual DWORD TrySetRate(DWORD rate)	{ return GetRate();				}
-	virtual DWORD GetRate()			{ return ctx->sample_rate?ctx->sample_rate:8000;}
-	virtual DWORD GetClockRate()		{ return GetRate();				}
+	virtual DWORD TrySetRate(DWORD rate, DWORD numChannels)	{ return GetRate();				}
+	virtual DWORD GetRate()					{ return ctx->sample_rate?ctx->sample_rate:8000;}
+	virtual DWORD GetClockRate()				{ return GetRate();				}
 private:
 	AVCodec 	*codec;
 	AVCodecContext	*ctx;
-	AVAudioResampleContext *avr;
+	SwrContext *swr;
 	AVFrame         *frame;
 	BYTE *samples;
 	int samplesSize;

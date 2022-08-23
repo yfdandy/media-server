@@ -16,11 +16,13 @@ public:
 	virtual BYTE GetTemporalLayer()		const = 0;
 	virtual BYTE GetSpatialLayer()		const = 0;
 	virtual VideoCodec::Type GetCodec()	const = 0;
+	virtual bool IsWaitingForIntra()	const = 0;
 	
 public:
 	//Factory method
 	static VideoLayerSelector* Create(VideoCodec::Type codec);
-	static LayerInfo GetLayerIds(const RTPPacket::shared& packet);
+	static std::vector<LayerInfo> GetLayerIds(const RTPPacket::shared& packet);
+	static bool AreLayersInfoeAggregated(const RTPPacket::shared& packet);
 };
 
 #endif /* VIDEOLAYERSELECTOR_H */
